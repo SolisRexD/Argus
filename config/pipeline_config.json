@@ -1,0 +1,90 @@
+{
+  "assets": {
+    "root": "/Game/Tools/Semantic",
+    "material_name": "M_PP_SemanticMask_Auto",
+    "rt_rgb_name": "RT_RGB",
+    "rt_mask_name": "RT_MASK"
+  },
+  "capture": {
+    "primary_stream": "rgb",
+    "rgb_actor_label": "SC_RGB",
+    "mask_actor_label": "SC_MASK",
+    "capture_source": "SCS_FINAL_COLOR_LDR",
+    "capture_every_frame": false,
+    "capture_on_movement": false,
+    "always_persist_rendering_state": true,
+    "default_location": [0.0, 0.0, 300.0],
+    "default_rotation": [-20.0, 0.0, 0.0],
+    "sync_mask_to_rgb": true,
+    "camera_intrinsics": {
+      "projection_type": "perspective",
+      "fov_deg": 90.0,
+      "fx_px": null,
+      "fy_px": null,
+      "cx_px": null,
+      "cy_px": null,
+      "sensor_width_mm": null,
+      "sensor_height_mm": null,
+      "image_width": 1920,
+      "image_height": 1080,
+      "use_custom_aspect_ratio": false,
+      "aspect_ratio": null,
+      "constrain_aspect_ratio": false,
+      "ortho_width": null
+    },
+    "streams": [
+      {
+        "name": "rgb",
+        "actor_label": "SC_RGB",
+        "rt_asset_name": "RT_RGB",
+        "file_suffix": "rgb",
+        "apply_post_process": false,
+        "post_process_material_name": "",
+        "sync_to_primary": false,
+        "force_png_opaque": true,
+        "capture_source": "SCS_FINAL_COLOR_LDR"
+      },
+      {
+        "name": "mask",
+        "actor_label": "SC_MASK",
+        "rt_asset_name": "RT_MASK",
+        "file_suffix": "mask",
+        "apply_post_process": true,
+        "post_process_material_name": "M_PP_SemanticMask_Auto",
+        "sync_to_primary": true,
+        "force_png_opaque": true,
+        "capture_source": "SCS_FINAL_COLOR_LDR"
+      }
+    ]
+  },
+  "render_target": {
+    "width": 1920,
+    "height": 1080,
+    "format_hint": "rgba8"
+  },
+  "semantics": {
+    "class_table_csv": "config/semantic_classes.csv",
+    "semantic_map_csv": "output/semantic_map.csv",
+    "mask_encoding": "class_color",
+    "unknown_stencil": 250
+  },
+  "output": {
+    "capture_dir": "output/captures",
+    "metadata_csv": "output/capture_metadata.csv",
+    "inventory_json": "output/scene_inventory.json",
+    "inventory_csv": "output/scene_inventory.csv",
+    "semantic_validation_csv": "output/semantic_map_validation.csv",
+    "stencil_writeback_log": "output/stencil_writeback_log.csv",
+    "file_prefix": "cap",
+    "force_png_opaque": true,
+    "force_mask_png_opaque": true
+  },
+  "batch": {
+    "poses_csv": "config/camera_poses.csv",
+    "sleep_seconds": 0.0,
+    "continue_on_error": true,
+    "skip_existing_capture_id": true,
+    "skip_requires_all_files": true,
+    "clean_incomplete_metadata": true
+  }
+}

@@ -1,0 +1,6 @@
+actor_name,component_name,actor_class,component_class,mesh_name,mesh_path,material_slot,material_name,material_path,instance_index,semantic_class,render_main_pass,render_custom_depth,stencil,color_r,color_g,color_b,confidence,reason,review_status,notes
+ExampleBuilding,StaticMeshComponent0,StaticMeshActor,StaticMeshComponent,SM_BuildingA,/Game/Env/Meshes/SM_BuildingA,,,,,building,true,true,5,255,255,255,high,"RGB 可见，MASK 标注为 building",pending,
+ExampleLeafTrash,StaticMeshComponent0,StaticMeshActor,StaticMeshComponent,SM_Leaves,/Game/Env/Props/SM_Leaves,,,,,ignore,true,false,,0,0,0,high,"RGB 中保留，但不进入 MASK",pending,"render_custom_depth=false 时 stencil 留空即可"
+ExampleWater,WaterMeshComponent,StaticMeshActor,StaticMeshComponent,SM_WaterPlane,/Game/Water/SM_WaterPlane,Water,MI_WaterLake,/Game/Water/MI_WaterLake,,water,true,true,1,0,128,255,high,"半透明水体 RGB 可见且 MASK 标注",pending,"材质必须开启 Allow Custom Depth Writes"
+ExampleGlassWindow,WindowGlass,StaticMeshActor,StaticMeshComponent,,,,MI_Glass,/Game/Env/Materials/MI_Glass,,ignore,true,false,,0,0,0,medium,"玻璃 RGB 可见，但不遮挡后方目标的 MASK",pending,"若要标注玻璃，则改为 render_custom_depth=true 并设置 stencil"
+ExampleUnknown,StaticMeshComponent0,StaticMeshActor,StaticMeshComponent,,,,,,,unknown,true,true,,255,0,255,low,"进入 MASK 但暂未分类，stencil 缺失会回退 unknown_stencil=250",pending,"回写时自动使用 unknown_stencil"

@@ -1,0 +1,4 @@
+id,x,y,z,pitch,yaw,roll,fov,fx_px,fy_px,cx_px,cy_px,projection_type,ortho_width
+pose_000001,0,0,300,-20,0,0,90,,,,,perspective,
+pose_000002,200,0,300,-20,15,0,90,,,,,perspective,
+pose_000003,400,100,350,-10,30,0,90,,,,,perspective,
