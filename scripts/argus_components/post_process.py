@@ -67,6 +67,22 @@ class SemanticPostProcessBuilder:
 
         return material
 
+    def load_or_create_material(self, asset_path, asset_name):
+        """
+        Load an existing Material asset or create it when it does not exist.
+
+        Reusing the asset keeps this builder non-interactive in the editor:
+        deleting and recreating an existing Material can trigger Unreal dialogs.
+        """
+        full = "{}/{}".format(asset_path, asset_name)
+
+        material = unreal.EditorAssetLibrary.load_asset(full)
+        if material:
+            log("Material already exists, reusing: {}".format(full))
+            return material
+
+        return self.create_material(asset_path, asset_name)
+
     def create_render_target(self, asset_path, asset_name):
         """
         创建 TextureRenderTarget2D 资产。
@@ -343,11 +359,7 @@ class SemanticPostProcessBuilder:
 
         material_path = "{}/{}".format(asset_root, material_name)
 
-        # 为了保证材质图完全干净，这里如果已有旧材质，就删除后重建。
-        if unreal.EditorAssetLibrary.does_asset_exist(material_path):
-            unreal.EditorAssetLibrary.delete_asset(material_path)
-
-        mat = self.create_material(asset_root, material_name)
+        mat = self.load_or_create_material(asset_root, material_name)
 
         # 设置为 Post Process 材质。
         mat.set_editor_property("material_domain", unreal.MaterialDomain.MD_POST_PROCESS)

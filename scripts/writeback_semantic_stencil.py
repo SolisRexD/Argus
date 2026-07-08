@@ -34,9 +34,11 @@ import sys
 # - common
 # - 其他同目录模块
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+for path in [PROJECT_ROOT, SCRIPT_DIR]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 from argus_components import AnnotationController, DataPipelineService, SceneObjectCatalog

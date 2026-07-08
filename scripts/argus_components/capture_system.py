@@ -25,6 +25,11 @@ from dataclasses import dataclass
 
 import unreal
 
+from argus_core.capture import force_png_alpha_opaque
+
+from .runtime_control import RuntimeCaptureController
+from .runtime_semantics import RuntimeSemanticStencilController
+
 from common import (
     choose_capture_source,
     ensure_dir,
@@ -32,6 +37,8 @@ from common import (
     get_actor_subsystem,
     get_capture_component,
     load_asset_or_raise,
+    mark_actor_always_loaded_for_world_partition,
+    make_rotator,
     now_stamp,
     parse_bool,
     parse_float,
@@ -452,7 +459,7 @@ class BaseCaptureService:
 
     def _rot(self, value):
         """将三元列表转换为 unreal.Rotator。"""
-        return unreal.Rotator(float(value[0]), float(value[1]), float(value[2]))
+        return make_rotator(float(value[0]), float(value[1]), float(value[2]))
 
     def _choose_ext_by_rt(self, rt):
         """
@@ -529,21 +536,7 @@ class BaseCaptureService:
         if not path.lower().endswith(".png"):
             return
 
-        try:
-            from PIL import Image
-        except Exception:
-            return
-
-        image = Image.open(path).convert("RGBA")
-        pixels = image.load()
-        width, height = image.size
-
-        for y in range(height):
-            for x in range(width):
-                r, g, b, _a = pixels[x, y]
-                pixels[x, y] = (r, g, b, 255)
-
-        image.save(path)
+        force_png_alpha_opaque(path)
 
 
 class DualCaptureSetupService(BaseCaptureService):
@@ -576,6 +569,7 @@ class DualCaptureSetupService(BaseCaptureService):
         actor = find_actor_by_label(label)
 
         if actor:
+            mark_actor_always_loaded_for_world_partition(actor)
             return actor
 
         actor = get_actor_subsystem().spawn_actor_from_class(
@@ -588,6 +582,7 @@ class DualCaptureSetupService(BaseCaptureService):
             raise RuntimeError("创建 SceneCapture2D 失败: {}".format(label))
 
         actor.set_actor_label(label)
+        mark_actor_always_loaded_for_world_partition(actor)
         return actor
 
     def _clear_post_process_materials(self, scene_capture_comp):
@@ -799,6 +794,8 @@ class CaptureService(BaseCaptureService):
 
     def __init__(self):
         self.intrinsics_manager = CameraIntrinsicsManager()
+        self.runtime_controller = RuntimeCaptureController()
+        self.semantic_stencil_controller = RuntimeSemanticStencilController()
 
     def _apply_pose_to_actor(self, actor, pose):
         """
@@ -814,7 +811,7 @@ class CaptureService(BaseCaptureService):
         """
         actor.set_actor_location_and_rotation(
             unreal.Vector(float(pose["x"]), float(pose["y"]), float(pose["z"])),
-            unreal.Rotator(float(pose["pitch"]), float(pose["yaw"]), float(pose["roll"])),
+            make_rotator(float(pose["pitch"]), float(pose["yaw"]), float(pose["roll"])),
             False,
             True,
         )
@@ -928,11 +925,21 @@ class CaptureService(BaseCaptureService):
                 )
 
         # 采集前等待一小段时间，让位姿、渲染状态或后处理状态稳定。
-        time.sleep(max(0.0, float(cfg.get("batch", {}).get("sleep_seconds", 0.0))))
+        runtime_plan = self.runtime_controller.prepare_for_capture(
+            cfg,
+            pose=pose,
+            capture_actor=primary["actor"],
+        )
+        semantic_stencil_stats = self.semantic_stencil_controller.apply(cfg)
+
+        try:
+            time.sleep(max(0.0, float(cfg.get("batch", {}).get("sleep_seconds", 0.0))))
 
         # 所有 stream 都采集两次，减少首帧不稳定问题。
-        for state in states.values():
-            self._capture_twice(state["component"])
+            for state in states.values():
+                self._capture_twice(state["component"])
+        finally:
+            self.runtime_controller.finish_after_capture(runtime_plan)
 
         cid = capture_id or "{}_{}".format(
             output_cfg.get("file_prefix", "cap"),
@@ -976,6 +983,8 @@ class CaptureService(BaseCaptureService):
             "roll": primary_rot.roll,
             "files_json": json.dumps(files, ensure_ascii=False),
             "primary_stream": primary_stream.name,
+            "runtime_plan_json": json.dumps(runtime_plan.to_metadata(), ensure_ascii=False),
+            "semantic_stencil_json": json.dumps(semantic_stencil_stats, ensure_ascii=False),
             **intrinsics_meta,
         }
 

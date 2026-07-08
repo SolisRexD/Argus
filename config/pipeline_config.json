@@ -79,6 +79,33 @@
     "force_png_opaque": true,
     "force_mask_png_opaque": true
   },
+  "runtime": {
+    "enabled": true,
+    "profile": "citysample_bigcity",
+    "warmup_seconds": 3.0,
+    "pause_after_warmup": true,
+    "resume_after_capture": true,
+    "wait_for_streaming": true,
+    "move_player_to_capture": true,
+    "restore_player_after_capture": true,
+    "hide_player_during_capture": true,
+    "player_streaming_source_z_offset_cm": 5000.0,
+    "citysample": {
+      "main_grid_loading_range": 12800,
+      "hlod0_loading_range": 76800,
+      "hlod_warmup_enabled": true,
+      "disable_fastgeo_transformer_for_semantic_capture": true,
+      "restore_fastgeo_transformer_after_capture": true
+    },
+    "console_commands": [],
+    "auto_semantic_stencil": {
+      "enabled": true,
+      "preserve_existing": true,
+      "unknown_for_unmatched": true,
+      "max_components": 60000,
+      "unmatched_sample_limit": 20
+    }
+  },
   "batch": {
     "poses_csv": "config/camera_poses.csv",
     "sleep_seconds": 0.0,

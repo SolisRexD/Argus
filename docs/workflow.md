@@ -71,23 +71,26 @@ scripts/batch_capture.py
 在 UE Python 控制台中，可以按顺序执行：
 
 ```python
-exec(open(r"<workspace>/Argus/scripts/export_scene_inventory.py", encoding="utf-8").read())
+import runpy
+runpy.run_path(r"<workspace>/Argus/scripts/export_scene_inventory.py", run_name="__main__")
 ```
 
 生成并清洗 `output/semantic_map.csv` 后，再继续执行：
 
 ```python
-exec(open(r"<workspace>/Argus/scripts/validate_semantic_map.py", encoding="utf-8").read())
-exec(open(r"<workspace>/Argus/scripts/writeback_semantic_stencil.py", encoding="utf-8").read())
-exec(open(r"<workspace>/Argus/scripts/build_semantic_pp_material.py", encoding="utf-8").read())
-exec(open(r"<workspace>/Argus/scripts/setup_dual_capture.py", encoding="utf-8").read())
-exec(open(r"<workspace>/Argus/scripts/capture_rgb_and_mask.py", encoding="utf-8").read())
+import runpy
+runpy.run_path(r"<workspace>/Argus/scripts/validate_semantic_map.py", run_name="__main__")
+runpy.run_path(r"<workspace>/Argus/scripts/writeback_semantic_stencil.py", run_name="__main__")
+runpy.run_path(r"<workspace>/Argus/scripts/build_semantic_pp_material.py", run_name="__main__")
+runpy.run_path(r"<workspace>/Argus/scripts/setup_dual_capture.py", run_name="__main__")
+runpy.run_path(r"<workspace>/Argus/scripts/capture_rgb_and_mask.py", run_name="__main__")
 ```
 
 批量采集时执行：
 
 ```python
-exec(open(r"<workspace>/Argus/scripts/batch_capture.py", encoding="utf-8").read())
+import runpy
+runpy.run_path(r"<workspace>/Argus/scripts/batch_capture.py", run_name="__main__")
 ```
 
 其中 `<workspace>/Argus` 替换成你的实际项目路径。
@@ -411,7 +414,8 @@ custom_depth_stencil_value
 在 UE 控制台中可以执行：
 
 ```python
-exec(open(r"<workspace>/Argus/scripts/writeback_semantic_stencil.py", encoding="utf-8").read())
+import runpy
+runpy.run_path(r"<workspace>/Argus/scripts/writeback_semantic_stencil.py", run_name="__main__")
 ```
 
 如果脚本底部是：
