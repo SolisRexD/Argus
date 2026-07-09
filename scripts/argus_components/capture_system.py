@@ -930,7 +930,7 @@ class CaptureService(BaseCaptureService):
             pose=pose,
             capture_actor=primary["actor"],
         )
-        semantic_stencil_stats = self.semantic_stencil_controller.apply(cfg)
+        semantic_stencil_stats = self.semantic_stencil_controller.apply(cfg, pose=pose)
 
         try:
             time.sleep(max(0.0, float(cfg.get("batch", {}).get("sleep_seconds", 0.0))))

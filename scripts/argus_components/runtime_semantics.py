@@ -3,7 +3,7 @@
 import unreal
 
 from argus_core.semantics import infer_semantic_stencil
-from common import get_all_level_actors, log, parse_bool, parse_int, warn
+from common import get_all_level_actors, log, parse_bool, parse_float, parse_int, warn
 
 
 class RuntimeSemanticStencilController:
@@ -14,12 +14,14 @@ class RuntimeSemanticStencilController:
         self._log = log_fn or log
         self._warn = warn_fn or warn
 
-    def apply(self, cfg):
-        options = cfg.get("runtime", {}).get("auto_semantic_stencil", {})
+    def apply(self, cfg, pose=None):
+        runtime_cfg = cfg.get("runtime", {})
+        options = runtime_cfg.get("auto_semantic_stencil", {})
         enabled = parse_bool(options.get("enabled"), default=False)
 
         stats = {
             "enabled": bool(enabled),
+            "component_order": "source",
             "scanned_components": 0,
             "changed": 0,
             "preserved": 0,
@@ -39,6 +41,8 @@ class RuntimeSemanticStencilController:
         unknown_for_unmatched = parse_bool(options.get("unknown_for_unmatched"), default=True)
         max_components = parse_int(options.get("max_components"), default=20000)
         unmatched_sample_limit = max(0, parse_int(options.get("unmatched_sample_limit"), default=20))
+        component_order = str(options.get("component_order", "source") or "source").strip().lower()
+        capture_point = self._resolve_capture_point(pose, options, runtime_cfg)
 
         try:
             actors = list(self._actor_provider())
@@ -47,74 +51,82 @@ class RuntimeSemanticStencilController:
             stats["failed"] += 1
             return stats
 
-        for actor in actors:
-            for component in self._get_primitive_components(actor):
-                if max_components and stats["scanned_components"] >= max_components:
-                    stats["stopped_at_limit"] = True
-                    self._log("Runtime semantic stencil stopped at component limit {}".format(max_components))
-                    self._log_summary(stats)
-                    return stats
+        component_items = self._iter_component_items(
+            actors,
+            component_order=component_order,
+            capture_point=capture_point,
+        )
+        if component_order == "capture_distance" and capture_point:
+            stats["component_order"] = component_order
 
-                stats["scanned_components"] += 1
+        for actor, component in component_items:
+            if max_components and stats["scanned_components"] >= max_components:
+                stats["stopped_at_limit"] = True
+                self._log("Runtime semantic stencil stopped at component limit {}".format(max_components))
+                self._log_summary(stats)
+                return stats
 
-                existing_stencil = self._get_int_property(component, "custom_depth_stencil_value", 0)
-                fields = self._collect_fields(actor, component)
+            stats["scanned_components"] += 1
 
-                if preserve_existing and existing_stencil > 0:
-                    stats["preserved"] += 1
-                    self._increment_count(stats["preserved_by_stencil"], str(existing_stencil))
+            existing_stencil = self._get_int_property(component, "custom_depth_stencil_value", 0)
+            fields = self._collect_fields(actor, component)
 
-                    enabled = self._ensure_component_custom_depth(component)
-                    if enabled is True:
-                        stats["preserved_enabled"] += 1
-                    elif enabled is None:
-                        stats["failed"] += 1
+            if preserve_existing and existing_stencil > 0:
+                stats["preserved"] += 1
+                self._increment_count(stats["preserved_by_stencil"], str(existing_stencil))
 
-                    continue
+                enabled = self._ensure_component_custom_depth(component)
+                if enabled is True:
+                    stats["preserved_enabled"] += 1
+                elif enabled is None:
+                    stats["failed"] += 1
 
-                decision = infer_semantic_stencil(
-                    fields,
-                    unknown_for_unmatched=False,
-                )
+                continue
 
-                if decision is None:
-                    if unknown_for_unmatched:
-                        decision = infer_semantic_stencil(
-                            fields,
-                            unknown_for_unmatched=True,
-                        )
+            decision = infer_semantic_stencil(
+                fields,
+                unknown_for_unmatched=False,
+            )
 
-                        if decision is None:
-                            stats["ignored"] += 1
-                            continue
+            if decision is None:
+                if unknown_for_unmatched:
+                    decision = infer_semantic_stencil(
+                        fields,
+                        unknown_for_unmatched=True,
+                    )
 
-                        self._append_unmatched_sample(
-                            stats["unmatched_samples"],
-                            fields,
-                            unmatched_sample_limit,
-                        )
-                    else:
-                        self._append_unmatched_sample(
-                            stats["unmatched_samples"],
-                            fields,
-                            unmatched_sample_limit,
-                        )
+                    if decision is None:
                         stats["ignored"] += 1
                         continue
 
-                if self._set_component_stencil(component, decision.stencil):
-                    stats["changed"] += 1
-                    by_class = stats["changed_by_class"]
-                    self._increment_count(by_class, decision.semantic_class)
+                    self._append_unmatched_sample(
+                        stats["unmatched_samples"],
+                        fields,
+                        unmatched_sample_limit,
+                    )
                 else:
-                    stats["failed"] += 1
+                    self._append_unmatched_sample(
+                        stats["unmatched_samples"],
+                        fields,
+                        unmatched_sample_limit,
+                    )
+                    stats["ignored"] += 1
+                    continue
+
+            if self._set_component_stencil(component, decision.stencil):
+                stats["changed"] += 1
+                by_class = stats["changed_by_class"]
+                self._increment_count(by_class, decision.semantic_class)
+            else:
+                stats["failed"] += 1
 
         self._log_summary(stats)
         return stats
 
     def _log_summary(self, stats):
         self._log(
-            "Runtime semantic stencil: scanned={}, changed={}, preserved={}, preserved_enabled={}, ignored={}, failed={}, by_class={}, preserved_by_stencil={}, unmatched_samples={}".format(
+            "Runtime semantic stencil: order={}, scanned={}, changed={}, preserved={}, preserved_enabled={}, ignored={}, failed={}, by_class={}, preserved_by_stencil={}, unmatched_samples={}".format(
+                stats.get("component_order", "source"),
                 stats.get("scanned_components", 0),
                 stats.get("changed", 0),
                 stats.get("preserved", 0),
@@ -126,6 +138,35 @@ class RuntimeSemanticStencilController:
                 stats.get("unmatched_samples", []),
             )
         )
+
+    def _iter_component_items(self, actors, component_order="source", capture_point=None):
+        if component_order != "capture_distance" or not capture_point:
+            for actor in actors:
+                for component in self._get_primitive_components(actor):
+                    yield actor, component
+
+            return
+
+        items = []
+        sequence = 0
+
+        for actor in actors:
+            for component in self._get_primitive_components(actor):
+                location = self._component_location(component) or self._actor_location(actor)
+                distance = self._distance_squared(location, capture_point)
+                items.append(
+                    (
+                        distance is None,
+                        distance if distance is not None else 0.0,
+                        sequence,
+                        actor,
+                        component,
+                    )
+                )
+                sequence += 1
+
+        for _, _, _, actor, component in sorted(items, key=lambda item: item[:3]):
+            yield actor, component
 
     def _get_primitive_components(self, actor):
         if not actor:
@@ -204,6 +245,67 @@ class RuntimeSemanticStencilController:
             return bool(obj.get_editor_property(prop_name))
         except Exception:
             return bool(default)
+
+    def _resolve_capture_point(self, pose, options, runtime_cfg):
+        for value in (
+            pose,
+            options.get("capture_point"),
+            runtime_cfg.get("capture_point"),
+        ):
+            point = self._xyz_tuple(value)
+            if point:
+                return point
+
+        return None
+
+    def _xyz_tuple(self, value):
+        if not value:
+            return None
+
+        if isinstance(value, dict):
+            x = parse_float(value.get("x"), default=None)
+            y = parse_float(value.get("y"), default=None)
+            z = parse_float(value.get("z"), default=None)
+        else:
+            x = parse_float(getattr(value, "x", None), default=None)
+            y = parse_float(getattr(value, "y", None), default=None)
+            z = parse_float(getattr(value, "z", None), default=None)
+
+        if x is None or y is None or z is None:
+            return None
+
+        return (float(x), float(y), float(z))
+
+    def _component_location(self, component):
+        return self._object_location(
+            component,
+            ("get_component_location", "get_world_location"),
+        )
+
+    def _actor_location(self, actor):
+        return self._object_location(actor, ("get_actor_location",))
+
+    def _object_location(self, obj, method_names):
+        if not obj:
+            return None
+
+        for method_name in method_names:
+            try:
+                method = getattr(obj, method_name)
+                return self._xyz_tuple(method())
+            except Exception:
+                pass
+
+        return None
+
+    def _distance_squared(self, location, capture_point):
+        if not location or not capture_point:
+            return None
+
+        dx = float(location[0]) - float(capture_point[0])
+        dy = float(location[1]) - float(capture_point[1])
+        dz = float(location[2]) - float(capture_point[2])
+        return dx * dx + dy * dy + dz * dz
 
     def _set_component_stencil(self, component, stencil):
         try:
