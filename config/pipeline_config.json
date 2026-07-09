@@ -103,7 +103,7 @@
       "preserve_existing": true,
       "unknown_for_unmatched": true,
       "component_order": "capture_distance",
-      "max_components": 60000,
+      "max_components": 0,
       "unmatched_sample_limit": 20
     }
   },

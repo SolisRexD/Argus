@@ -25,7 +25,7 @@ def test_project_pipeline_config_enables_citysample_fastgeo_semantic_capture():
 
     assert "FastGeo.EnableTransformer 0" in plan.console_commands
     assert plan.post_capture_console_commands == ("FastGeo.EnableTransformer 1",)
-    assert cfg["runtime"]["auto_semantic_stencil"]["max_components"] >= 60000
+    assert cfg["runtime"]["auto_semantic_stencil"]["max_components"] == 0
     assert cfg["runtime"]["auto_semantic_stencil"]["component_order"] == "capture_distance"
 
 

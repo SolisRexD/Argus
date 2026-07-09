@@ -287,3 +287,41 @@ def test_runtime_semantic_stencil_prioritizes_components_near_capture_point(monk
     assert near_component.props["custom_depth_stencil_value"] == 2
     assert far_component.props["custom_depth_stencil_value"] == 0
     assert stats["stopped_at_limit"] is True
+
+
+def test_runtime_semantic_stencil_zero_component_limit_scans_everything(monkeypatch):
+    module = import_runtime_semantics(monkeypatch)
+
+    first = FakeComponent(
+        "SM_Road_Asphalt",
+        "StaticMeshComponent",
+        mesh=FakeMesh("SM_road_asphalt", "/Game/Roads/SM_road_asphalt"),
+    )
+    second = FakeComponent(
+        "VehicleMesh",
+        "StaticMeshComponent",
+        mesh=FakeMesh("SM_car_body", "/Game/Vehicles/SM_car_body"),
+    )
+    actor = FakeActor("RuntimeStreet", "StaticMeshActor", [first, second])
+
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [actor],
+        log_fn=lambda msg: None,
+        warn_fn=lambda msg: None,
+    )
+
+    stats = controller.apply(
+        {
+            "runtime": {
+                "auto_semantic_stencil": {
+                    "enabled": True,
+                    "max_components": 0,
+                    "unknown_for_unmatched": False,
+                }
+            }
+        }
+    )
+
+    assert stats["scanned_components"] == 2
+    assert stats["changed_by_class"] == {"road": 1, "vehicle": 1}
+    assert stats["stopped_at_limit"] is False
