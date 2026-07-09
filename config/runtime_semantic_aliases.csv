@@ -1,4 +1,5 @@
 priority,semantic_class,stencil,aliases,notes
+5,water,1,ocean;harbor water;water body;waterbody;bay water;canal water;open water;sea water,CitySample port and ocean materials such as MI_ocean
 10,curb_border,4,modular median end;divider corrective;median end;median divider,CitySample Megascans median and divider pieces
 20,prop,20,parking block;parking barrier;wheel stop;concrete parking stop,CitySample parking blocks and small barriers
 30,prop,20,bollard;traffic cone;trash bag;trash can;mailbox;fire hydrant,Street furniture and small urban props

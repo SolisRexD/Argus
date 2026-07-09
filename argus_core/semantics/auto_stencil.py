@@ -22,7 +22,7 @@ RULES = (
     ("vehicle", 6, ("vehicle", "veh", "car", "taxi", "truck", "bus", "wheel", "tire")),
     ("traffic_sign", 8, ("traffic sign", "traffic_sign", "street sign", "streetsign", "signage", "trafficlight", "traffic_light", "signal")),
     ("prop", 20, ("streetlight", "street_light", "lampost", "lamp_post", "lamp post", "trash", "bin", "post", "pole", "hydrant", "mailbox", "meter")),
-    ("curb_border", 4, ("curb", "kerb")),
+    ("curb_border", 4, ("curb", "kerb", "curbstone", "kerbstone", "curb stone", "kerb stone")),
     ("sidewalk", 3, ("sidewalk", "walkway", "pavement", "paving")),
     ("road", 2, ("road", "asphalt", "lane", "crosswalk", "zebra", "roadmarking", "road_marking")),
     ("bridge", 11, ("bridge", "overpass")),
@@ -76,6 +76,8 @@ def _normalize(fields):
 
 
 def _contains_any(text, keywords):
+    tokens = set(text.split())
+    padded_text = " {} ".format(text)
     compact_text = text.replace(" ", "")
 
     for keyword in keywords:
@@ -84,11 +86,16 @@ def _contains_any(text, keywords):
         if not normalized_keyword:
             continue
 
-        if normalized_keyword in text:
+        keyword_tokens = normalized_keyword.split()
+
+        if len(keyword_tokens) == 1 and normalized_keyword in tokens:
+            return str(keyword).strip()
+
+        if len(keyword_tokens) > 1 and " {} ".format(normalized_keyword) in padded_text:
             return str(keyword).strip()
 
         compact_keyword = normalized_keyword.replace(" ", "")
-        if len(compact_keyword) >= 3 and compact_keyword in compact_text:
+        if len(compact_keyword) >= 6 and compact_keyword in compact_text:
             return str(keyword).strip()
 
     return ""

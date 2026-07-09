@@ -106,6 +106,13 @@ def test_infers_citysample_street_furniture_and_foliage_aliases():
     assert bush.stencil == 16
 
 
+def test_does_not_match_short_keyword_inside_larger_token():
+    decision = infer_semantic_stencil(["OceanPlane"], unknown_for_unmatched=True)
+
+    assert decision.semantic_class == "unknown"
+    assert decision.stencil == 250
+
+
 def test_loads_plain_alias_csv_for_llm_friendly_runtime_rules(tmp_path):
     alias_path = tmp_path / "runtime_semantic_aliases.csv"
     alias_path.write_text(
@@ -158,6 +165,27 @@ def test_project_runtime_alias_file_uses_semantic_palette_classes():
     assert rules
     for semantic_class, stencil, _ in rules:
         assert palette[semantic_class] == stencil
+
+
+def test_project_runtime_alias_file_prioritizes_citysample_ocean_as_water():
+    root = Path(__file__).resolve().parents[1]
+    cfg = __import__("json").loads((root / "config" / "pipeline_config.json").read_text())
+    alias_path = root / cfg["runtime"]["auto_semantic_stencil"]["aliases_csv"]
+    rules = load_semantic_alias_rules(alias_path)
+
+    decision = infer_semantic_stencil(
+        [
+            "OceanPlane",
+            "MI_ocean",
+            "/Game/Prop/kit_ocean/Material/MI_ocean.MI_ocean",
+            "T_Ocean",
+        ],
+        rules=rules,
+    )
+
+    assert decision.semantic_class == "water"
+    assert decision.stencil == 1
+    assert decision.reason == "alias:ocean"
 
 
 def test_runtime_rule_classes_exist_in_semantic_palette():
