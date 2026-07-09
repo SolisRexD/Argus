@@ -216,6 +216,37 @@ def test_runtime_semantic_stencil_collects_unmatched_samples_before_unknown(monk
     assert "MysteryComponentA" in stats["unmatched_samples"][0]
 
 
+def test_runtime_semantic_stencil_unmatched_samples_are_unique(monkeypatch):
+    module = import_runtime_semantics(monkeypatch)
+
+    duplicate_a = FakeComponent("MysteryComponentA", "StaticMeshComponent")
+    duplicate_b = FakeComponent("MysteryComponentA", "StaticMeshComponent")
+    distinct = FakeComponent("MysteryComponentB", "StaticMeshComponent")
+    actor = FakeActor("MysteryActor", "RuntimeActor", [duplicate_a, duplicate_b, distinct])
+
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [actor],
+        log_fn=lambda msg: None,
+        warn_fn=lambda msg: None,
+    )
+
+    stats = controller.apply(
+        {
+            "runtime": {
+                "auto_semantic_stencil": {
+                    "enabled": True,
+                    "unknown_for_unmatched": True,
+                    "unmatched_sample_limit": 2,
+                }
+            }
+        }
+    )
+
+    assert len(stats["unmatched_samples"]) == 2
+    assert "MysteryComponentA" in stats["unmatched_samples"][0]
+    assert "MysteryComponentB" in stats["unmatched_samples"][1]
+
+
 def test_runtime_semantic_stencil_ignores_capture_rig_when_unknown_is_enabled(monkeypatch):
     module = import_runtime_semantics(monkeypatch)
 
@@ -325,3 +356,59 @@ def test_runtime_semantic_stencil_zero_component_limit_scans_everything(monkeypa
     assert stats["scanned_components"] == 2
     assert stats["changed_by_class"] == {"road": 1, "vehicle": 1}
     assert stats["stopped_at_limit"] is False
+
+
+def test_runtime_semantic_stencil_uses_configured_plain_alias_file(monkeypatch, tmp_path):
+    module = import_runtime_semantics(monkeypatch)
+
+    alias_path = tmp_path / "aliases.csv"
+    alias_path.write_text(
+        "\n".join(
+            [
+                "priority,semantic_class,stencil,aliases,notes",
+                "10,curb_border,4,modular median end;divider corrective,median assets",
+                "20,prop,20,parking block,parking assets",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    median = FakeComponent(
+        "StaticMesh__Modular_Median_End_LOD0",
+        "InstancedStaticMeshComponent",
+        mesh=FakeMesh(
+            "Modular_Median_End_LOD0_vcdmdgudw",
+            "/Game/Megascans/3D_Assets/Modular_Median_End_00",
+        ),
+    )
+    parking = FakeComponent(
+        "InstancedStaticMesh",
+        "InstancedStaticMeshComponent",
+        mesh=FakeMesh(
+            "Parking_Block_LOD0_tltrecmfa",
+            "/Game/Megascans/3D_Assets/Parking_Block_00",
+        ),
+    )
+    actor = FakeActor("DIVIDER_CORRECTIVE_N123459", "TemplateActor", [median, parking])
+
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [actor],
+        log_fn=lambda msg: None,
+        warn_fn=lambda msg: None,
+    )
+
+    stats = controller.apply(
+        {
+            "runtime": {
+                "auto_semantic_stencil": {
+                    "enabled": True,
+                    "aliases_csv": str(alias_path),
+                    "unknown_for_unmatched": False,
+                }
+            }
+        }
+    )
+
+    assert stats["changed_by_class"] == {"curb_border": 1, "prop": 1}
+    assert median.props["custom_depth_stencil_value"] == 4
+    assert parking.props["custom_depth_stencil_value"] == 20

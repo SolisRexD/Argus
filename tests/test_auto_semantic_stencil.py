@@ -2,7 +2,7 @@ import csv
 from pathlib import Path
 
 from argus_core.semantics import infer_semantic_stencil
-from argus_core.semantics.auto_stencil import RULES
+from argus_core.semantics.auto_stencil import RULES, load_semantic_alias_rules
 
 
 def test_infers_citysample_vehicle_from_actor_and_mesh_names():
@@ -104,6 +104,60 @@ def test_infers_citysample_street_furniture_and_foliage_aliases():
     assert tree.stencil == 15
     assert bush.semantic_class == "bush"
     assert bush.stencil == 16
+
+
+def test_loads_plain_alias_csv_for_llm_friendly_runtime_rules(tmp_path):
+    alias_path = tmp_path / "runtime_semantic_aliases.csv"
+    alias_path.write_text(
+        "\n".join(
+            [
+                "priority,semantic_class,stencil,aliases,notes",
+                "10,curb_border,4,modular median end;divider corrective,plain text aliases",
+                "20,prop,20,parking block;parking barrier,plain text aliases",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rules = load_semantic_alias_rules(alias_path)
+    median = infer_semantic_stencil(
+        [
+            "DIVIDER_CORRECTIVE_N123459",
+            "Modular_Median_End_LOD0_vcdmdgudw",
+        ],
+        rules=rules,
+    )
+    parking = infer_semantic_stencil(
+        [
+            "BPP_Underpass_Medium_F166",
+            "Parking_Block_LOD0_tltrecmfa",
+        ],
+        rules=rules,
+    )
+
+    assert median.semantic_class == "curb_border"
+    assert median.reason == "alias:modular median end"
+    assert parking.semantic_class == "prop"
+    assert parking.reason == "alias:parking block"
+
+
+def test_project_runtime_alias_file_uses_semantic_palette_classes():
+    root = Path(__file__).resolve().parents[1]
+    cfg = __import__("json").loads((root / "config" / "pipeline_config.json").read_text())
+    alias_path = root / cfg["runtime"]["auto_semantic_stencil"]["aliases_csv"]
+    palette_path = root / "config" / "semantic_classes.csv"
+
+    with palette_path.open("r", encoding="utf-8-sig", newline="") as f:
+        palette = {
+            row["semantic_class"]: int(row["stencil"])
+            for row in csv.DictReader(f)
+        }
+
+    rules = load_semantic_alias_rules(alias_path)
+
+    assert rules
+    for semantic_class, stencil, _ in rules:
+        assert palette[semantic_class] == stencil
 
 
 def test_runtime_rule_classes_exist_in_semantic_palette():

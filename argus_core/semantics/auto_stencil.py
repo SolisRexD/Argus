@@ -4,6 +4,8 @@ This is a fallback for streamed or spawned UE actors that do not yet have a
 curated semantic_map.csv rule. Curated non-zero stencil values should still win.
 """
 
+import csv
+import re
 from dataclasses import dataclass
 
 
@@ -63,19 +65,100 @@ IGNORE_KEYWORDS = (
 )
 
 
+def _normalize_text(value):
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^0-9a-z]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _normalize(fields):
-    return " ".join(str(field or "").lower() for field in fields)
+    return " ".join(_normalize_text(field) for field in fields).strip()
 
 
 def _contains_any(text, keywords):
+    compact_text = text.replace(" ", "")
+
     for keyword in keywords:
-        if keyword in text:
-            return keyword
+        normalized_keyword = _normalize_text(keyword)
+
+        if not normalized_keyword:
+            continue
+
+        if normalized_keyword in text:
+            return str(keyword).strip()
+
+        compact_keyword = normalized_keyword.replace(" ", "")
+        if len(compact_keyword) >= 3 and compact_keyword in compact_text:
+            return str(keyword).strip()
 
     return ""
 
 
-def infer_semantic_stencil(fields, unknown_for_unmatched=False):
+def _parse_int(value, row_number, field_name):
+    text = str(value or "").strip()
+
+    if not text:
+        raise ValueError("Missing {} in semantic alias row {}".format(field_name, row_number))
+
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValueError(
+            "Invalid {} {!r} in semantic alias row {}".format(field_name, text, row_number)
+        ) from exc
+
+
+def load_semantic_alias_rules(path):
+    """Load plain-text semantic aliases from a CSV file.
+
+    The CSV is intentionally simple so UE users and LLM-assisted workflows can
+    edit it without Python or regular expressions. Required columns:
+    semantic_class, stencil, aliases. aliases is a semicolon-separated list.
+    """
+    loaded = []
+
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        required_fields = {"semantic_class", "stencil", "aliases"}
+        missing = required_fields - set(reader.fieldnames or [])
+
+        if missing:
+            raise ValueError(
+                "Semantic alias CSV is missing required columns: {}".format(
+                    ", ".join(sorted(missing))
+                )
+            )
+
+        for row_number, row in enumerate(reader, start=2):
+            values = [str(value or "").strip() for value in row.values()]
+            if not any(values):
+                continue
+
+            semantic_class = str(row.get("semantic_class") or "").strip()
+            aliases = tuple(
+                alias.strip()
+                for alias in str(row.get("aliases") or "").split(";")
+                if alias.strip()
+            )
+
+            if not semantic_class or not aliases:
+                continue
+
+            priority_text = str(row.get("priority") or "").strip()
+            priority = _parse_int(priority_text, row_number, "priority") if priority_text else 1000
+            stencil = _parse_int(row.get("stencil"), row_number, "stencil")
+            loaded.append((priority, len(loaded), semantic_class, stencil, aliases))
+
+    return tuple(
+        (semantic_class, stencil, aliases)
+        for _, _, semantic_class, stencil, aliases in sorted(
+            loaded,
+            key=lambda item: (item[0], item[1]),
+        )
+    )
+
+
+def infer_semantic_stencil(fields, unknown_for_unmatched=False, rules=None):
     """Infer a semantic stencil from names/classes/material identifiers."""
     text = _normalize(fields)
 
@@ -85,6 +168,15 @@ def infer_semantic_stencil(fields, unknown_for_unmatched=False):
     matched = _contains_any(text, IGNORE_KEYWORDS)
     if matched:
         return None
+
+    for semantic_class, stencil, aliases in tuple(rules or ()):
+        matched = _contains_any(text, aliases)
+        if matched:
+            return RuntimeSemanticDecision(
+                semantic_class=semantic_class,
+                stencil=stencil,
+                reason="alias:{}".format(matched),
+            )
 
     for semantic_class, stencil, keywords in RULES:
         matched = _contains_any(text, keywords)

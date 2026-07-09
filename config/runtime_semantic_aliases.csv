@@ -1,0 +1,9 @@
+priority,semantic_class,stencil,aliases,notes
+10,curb_border,4,modular median end;divider corrective;median end;median divider,CitySample Megascans median and divider pieces
+20,prop,20,parking block;parking barrier;wheel stop;concrete parking stop,CitySample parking blocks and small barriers
+30,prop,20,bollard;traffic cone;trash bag;trash can;mailbox;fire hydrant,Street furniture and small urban props
+40,traffic_sign,8,traffic signal;traffic light;street sign;road sign;sign post,Traffic control signs and signal assets
+50,road,2,road marking;roadmarking;lane marking;crosswalk marking,zebra or lane paint that should stay road
+60,sidewalk,3,sidewalk slab;paving slab;pavement tile;pedestrian paving,Walkable sidewalk and paving assets
+70,tree,15,street tree;tree trunk;tree canopy;foliage tree,Tree assets whose generated names omit the class
+80,bush,16,shrub hedge;hedge cluster;bush cluster,Low vegetation clusters

@@ -2,8 +2,8 @@
 
 import unreal
 
-from argus_core.semantics import infer_semantic_stencil
-from common import get_all_level_actors, log, parse_bool, parse_float, parse_int, warn
+from argus_core.semantics import infer_semantic_stencil, load_semantic_alias_rules
+from common import get_all_level_actors, log, parse_bool, parse_float, parse_int, resolve_path, warn
 
 
 class RuntimeSemanticStencilController:
@@ -32,6 +32,7 @@ class RuntimeSemanticStencilController:
             "changed_by_class": {},
             "preserved_by_stencil": {},
             "unmatched_samples": [],
+            "alias_rules_loaded": 0,
         }
 
         if not enabled:
@@ -43,6 +44,7 @@ class RuntimeSemanticStencilController:
         unmatched_sample_limit = max(0, parse_int(options.get("unmatched_sample_limit"), default=20))
         component_order = str(options.get("component_order", "source") or "source").strip().lower()
         capture_point = self._resolve_capture_point(pose, options, runtime_cfg)
+        alias_rules = self._load_alias_rules(options, stats)
 
         try:
             actors = list(self._actor_provider())
@@ -70,6 +72,7 @@ class RuntimeSemanticStencilController:
 
             existing_stencil = self._get_int_property(component, "custom_depth_stencil_value", 0)
             fields = self._collect_fields(actor, component)
+            component_fields = self._collect_component_fields(component)
 
             if preserve_existing and existing_stencil > 0:
                 stats["preserved"] += 1
@@ -83,16 +86,20 @@ class RuntimeSemanticStencilController:
 
                 continue
 
-            decision = infer_semantic_stencil(
+            decision = self._infer_component_semantic_stencil(
                 fields,
+                component_fields,
                 unknown_for_unmatched=False,
+                alias_rules=alias_rules,
             )
 
             if decision is None:
                 if unknown_for_unmatched:
-                    decision = infer_semantic_stencil(
+                    decision = self._infer_component_semantic_stencil(
                         fields,
+                        component_fields,
                         unknown_for_unmatched=True,
+                        alias_rules=alias_rules,
                     )
 
                     if decision is None:
@@ -123,9 +130,51 @@ class RuntimeSemanticStencilController:
         self._log_summary(stats)
         return stats
 
+    def _infer_component_semantic_stencil(
+        self,
+        fields,
+        component_fields,
+        unknown_for_unmatched=False,
+        alias_rules=(),
+    ):
+        if alias_rules:
+            decision = infer_semantic_stencil(
+                component_fields,
+                unknown_for_unmatched=False,
+                rules=alias_rules,
+            )
+
+            if decision:
+                return decision
+
+        return infer_semantic_stencil(
+            fields,
+            unknown_for_unmatched=unknown_for_unmatched,
+            rules=alias_rules,
+        )
+
+    def _load_alias_rules(self, options, stats):
+        alias_csv = str(options.get("aliases_csv") or "").strip()
+
+        if not alias_csv:
+            return ()
+
+        alias_path = resolve_path(alias_csv)
+        stats["alias_rules_path"] = alias_path
+
+        try:
+            rules = load_semantic_alias_rules(alias_path)
+        except Exception as exc:
+            self._warn("Runtime semantic alias CSV load failed: {}".format(exc))
+            stats["alias_rules_error"] = str(exc)
+            return ()
+
+        stats["alias_rules_loaded"] = len(rules)
+        return rules
+
     def _log_summary(self, stats):
         self._log(
-            "Runtime semantic stencil: order={}, scanned={}, changed={}, preserved={}, preserved_enabled={}, ignored={}, failed={}, by_class={}, preserved_by_stencil={}, unmatched_samples={}".format(
+            "Runtime semantic stencil: order={}, scanned={}, changed={}, preserved={}, preserved_enabled={}, ignored={}, failed={}, alias_rules_loaded={}, by_class={}, preserved_by_stencil={}, unmatched_samples={}".format(
                 stats.get("component_order", "source"),
                 stats.get("scanned_components", 0),
                 stats.get("changed", 0),
@@ -133,6 +182,7 @@ class RuntimeSemanticStencilController:
                 stats.get("preserved_enabled", 0),
                 stats.get("ignored", 0),
                 stats.get("failed", 0),
+                stats.get("alias_rules_loaded", 0),
                 stats.get("changed_by_class", {}),
                 stats.get("preserved_by_stencil", {}),
                 stats.get("unmatched_samples", []),
@@ -178,10 +228,14 @@ class RuntimeSemanticStencilController:
             return []
 
     def _collect_fields(self, actor, component):
-        fields = [
+        return [
             self._actor_label(actor),
             self._object_name(actor),
             self._class_name(actor),
+        ] + self._collect_component_fields(component)
+
+    def _collect_component_fields(self, component):
+        fields = [
             self._object_name(component),
             self._class_name(component),
         ]
@@ -330,10 +384,7 @@ class RuntimeSemanticStencilController:
     def _increment_count(self, mapping, key):
         mapping[key] = mapping.get(key, 0) + 1
 
-    def _append_unmatched_sample(self, samples, fields, limit):
-        if limit <= 0 or len(samples) >= limit:
-            return
-
+    def _format_unmatched_sample(self, fields):
         compact_fields = []
         for field in fields:
             text = str(field or "").strip()
@@ -343,4 +394,13 @@ class RuntimeSemanticStencilController:
             if len(compact_fields) >= 8:
                 break
 
-        samples.append(" | ".join(compact_fields))
+        return " | ".join(compact_fields)
+
+    def _append_unmatched_sample(self, samples, fields, limit):
+        if limit <= 0 or len(samples) >= limit:
+            return
+
+        sample = self._format_unmatched_sample(fields)
+
+        if sample and sample not in samples:
+            samples.append(sample)
