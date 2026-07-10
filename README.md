@@ -15,9 +15,28 @@ Argus 是一个可配置的 Unreal Engine 语义数据采集管线，默认同�
 
 ```text
 Argus/
+├─ argus_core/
+│  ├─ capture/
+│  ├─ io/
+│  ├─ model/
+│  ├─ planning/
+│  └─ semantics/
+│
+├─ argus_backends/
+│  └─ ue/
+│     └─ editor.py
+│
 ├─ scripts/
-│  ├─ common.py
-│  ├─ argus_components.py
+│  ├─ common.py                 # 旧脚本兼容入口
+│  ├─ argus_components/
+│  │  ├─ annotation_control.py
+│  │  ├─ capture_system.py
+│  │  ├─ data_pipeline.py
+│  │  ├─ post_process.py
+│  │  ├─ runtime_control.py
+│  │  ├─ runtime_semantics.py
+│  │  ├─ runtime_session.py
+│  │  └─ scene_objects.py
 │  ├─ export_scene_inventory.py
 │  ├─ validate_semantic_map.py
 │  ├─ writeback_semantic_stencil.py
@@ -46,7 +65,10 @@ Argus/
 
 说明：
 
+- `argus_core/`：不依赖 `unreal` 的模型、规划、文件解析和采集通用逻辑；
+- `argus_backends/ue/`：UE 5.8 的 World、Actor、Asset 与编辑器适配；
 - `scripts/`：UE Python 脚本与组件代码；
+- `scripts/common.py`：旧入口兼容门面，新代码不再向其中增加职责；
 - `config/`：管线配置、语义类别表、相机位姿；
 - `output/`：清单、日志、采集元数据、采集结果；
 - `docs/`：工作流说明与补充文档。

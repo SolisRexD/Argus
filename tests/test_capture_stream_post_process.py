@@ -45,6 +45,8 @@ def import_capture_system(monkeypatch):
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
     for module_name in (
         "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
         "argus_components",
         "argus_components.capture_system",
     ):

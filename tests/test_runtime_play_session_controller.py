@@ -58,6 +58,8 @@ def import_runtime_session(
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
     for module_name in (
         "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
         "argus_components.runtime_session",
     ):
         sys.modules.pop(module_name, None)

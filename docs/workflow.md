@@ -99,7 +99,19 @@ runpy.run_path(r"<workspace>/Argus/scripts/batch_capture.py", run_name="__main__
 
 ## 4. 代码架构
 
-当前 Argus 采用“入口脚本 + 组件层”的结构。
+当前 Argus 采用“纯核心 + 后端适配 + 入口脚本 + 组件服务”的渐进式结构。
+
+纯 Python 核心位于 `argus_core/`：
+
+| 目录 | 职责 |
+|---|---|
+| `argus_core/io/` | 路径、JSON 配置、CSV、基础类型与位姿解析，不依赖 UE |
+| `argus_core/model/` | 语义类别、标注目标和标注规则模型 |
+| `argus_core/planning/` | 基于后端能力选择标注策略 |
+| `argus_core/capture/` | 采集计划和输出验证 |
+| `argus_core/semantics/` | 运行时自动语义推断 |
+
+UE 后端位于 `argus_backends/ue/`。其中 `editor.py` 负责 UE 日志、World/Actor 查询、资产加载和 SceneCapture 枚举适配。该层允许导入 `unreal`，核心层不允许。
 
 入口脚本位于 `scripts/`，只负责编排流程：
 
@@ -123,20 +135,20 @@ runpy.run_path(r"<workspace>/Argus/scripts/batch_capture.py", run_name="__main__
 | `post_process.py` | 创建语义后处理材质，生成 stencil 到颜色的 HLSL 映射 |
 | `data_pipeline.py` | 写出 CSV/JSON、metadata、writeback log |
 
-公共工具位于：
+旧脚本兼容入口位于：
 
 ```text
 scripts/common.py
 ```
 
-负责：
+它只重新导出 `argus_core.io` 和 `argus_backends.ue` 中的现有函数，避免一次性破坏已有 UE 脚本。新代码应直接依赖所属模块：
 
-- 配置读取；
-- 路径解析；
-- 日志输出；
-- UE Actor 查询；
-- 资产加载；
-- CSV 字段解析。
+```python
+from argus_core.io import load_json_config, read_pose_rows, resolve_path
+from argus_backends.ue import find_actor_by_label, load_asset_or_raise, log
+```
+
+`argus_components` 使用惰性公共导出。导入 `DataPipelineService` 不会加载 UE 场景、捕获或材质模块，因此数据文件处理可在普通 Python 和未来其他后端中复用。
 
 ---
 

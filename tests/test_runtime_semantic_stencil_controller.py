@@ -97,7 +97,12 @@ def import_runtime_semantics(monkeypatch):
     fake_unreal = types.SimpleNamespace(PrimitiveComponent=object)
     monkeypatch.syspath_prepend("scripts")
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
-    for module_name in ("common", "argus_components.runtime_semantics"):
+    for module_name in (
+        "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
+        "argus_components.runtime_semantics",
+    ):
         sys.modules.pop(module_name, None)
     return importlib.import_module("argus_components.runtime_semantics")
 

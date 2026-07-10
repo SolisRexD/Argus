@@ -11,6 +11,8 @@ def import_runtime_control(monkeypatch):
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
     for module_name in (
         "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
         "argus_components.runtime_control",
     ):
         sys.modules.pop(module_name, None)

@@ -28,7 +28,12 @@ class BrokenEditorActorSubsystem:
 def import_common_with_fake_unreal(monkeypatch, fake_unreal):
     monkeypatch.syspath_prepend("scripts")
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
-    sys.modules.pop("common", None)
+    for module_name in (
+        "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
+    ):
+        sys.modules.pop(module_name, None)
     return importlib.import_module("common")
 
 

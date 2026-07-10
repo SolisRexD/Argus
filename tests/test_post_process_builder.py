@@ -40,7 +40,12 @@ def import_post_process(monkeypatch):
     )
     monkeypatch.syspath_prepend("scripts")
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
-    for module_name in ("common", "argus_components.post_process"):
+    for module_name in (
+        "common",
+        "argus_backends.ue",
+        "argus_backends.ue.editor",
+        "argus_components.post_process",
+    ):
         sys.modules.pop(module_name, None)
     return importlib.import_module("argus_components.post_process")
 

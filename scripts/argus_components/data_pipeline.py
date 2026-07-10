@@ -24,7 +24,7 @@ import csv
 import json
 import os
 
-from common import ensure_dir, now_stamp, read_pose_rows
+from argus_core.io import ensure_dir, now_stamp, read_pose_rows
 
 
 class DataPipelineService:
@@ -226,7 +226,7 @@ class DataPipelineService:
         """
         读取相机位姿 CSV。
 
-        实际解析逻辑交给 common.read_pose_rows，
+        实际解析逻辑交给 argus_core.io.read_pose_rows，
         这样 pose 格式的容错和转换可以集中维护。
         """
         return read_pose_rows(poses_csv)
