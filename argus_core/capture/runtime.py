@@ -89,6 +89,78 @@ class RuntimePreparationPlan:
         }
 
 
+@dataclass(frozen=True)
+class RuntimePlaySessionPlan:
+    """Commands that must run outside PIE at play-session boundaries."""
+
+    enabled: bool
+    profile: str = "generic"
+    pre_play_console_commands: tuple[str, ...] = ()
+    rejected_pre_play_console_commands: tuple[str, ...] = ()
+    post_play_console_commands: tuple[str, ...] = ()
+    rejected_post_play_console_commands: tuple[str, ...] = ()
+
+    def to_metadata(self):
+        return {
+            "enabled": self.enabled,
+            "profile": self.profile,
+            "pre_play_console_commands": list(self.pre_play_console_commands),
+            "rejected_pre_play_console_commands": list(
+                self.rejected_pre_play_console_commands
+            ),
+            "post_play_console_commands": list(self.post_play_console_commands),
+            "rejected_post_play_console_commands": list(
+                self.rejected_post_play_console_commands
+            ),
+        }
+
+
+def build_runtime_play_session_plan(cfg):
+    """Build commands that must execute before PIE starts and after it stops."""
+    runtime_cfg = dict((cfg or {}).get("runtime", {}) or {})
+    enabled = _parse_bool(runtime_cfg.get("enabled"), default=False)
+
+    if not enabled:
+        return RuntimePlaySessionPlan(enabled=False)
+
+    profile = _normalize_profile(runtime_cfg.get("profile", "generic"))
+    allowed_prefixes = _tuple_text(
+        runtime_cfg.get("allowed_console_prefixes"),
+        default=DEFAULT_ALLOWED_CONSOLE_PREFIXES,
+    )
+    trusted_pre_play_commands = []
+    trusted_post_play_commands = []
+
+    if profile in CITYSAMPLE_PROFILES:
+        city_pre_play, city_post_play = _citysample_play_session_commands(runtime_cfg)
+        trusted_pre_play_commands.extend(city_pre_play)
+        trusted_post_play_commands.extend(city_post_play)
+
+    extra_pre_accepted, pre_rejected = _filter_console_commands(
+        _tuple_text(runtime_cfg.get("pre_play_console_commands"), default=()),
+        allowed_prefixes,
+    )
+    extra_post_accepted, post_rejected = _filter_console_commands(
+        _tuple_text(runtime_cfg.get("post_play_console_commands"), default=()),
+        allowed_prefixes,
+    )
+    pre_accepted = _dedupe_console_commands(
+        trusted_pre_play_commands + extra_pre_accepted
+    )
+    post_accepted = _dedupe_console_commands(
+        trusted_post_play_commands + extra_post_accepted
+    )
+
+    return RuntimePlaySessionPlan(
+        enabled=True,
+        profile=profile,
+        pre_play_console_commands=tuple(pre_accepted),
+        rejected_pre_play_console_commands=tuple(pre_rejected),
+        post_play_console_commands=tuple(post_accepted),
+        rejected_post_play_console_commands=tuple(post_rejected),
+    )
+
+
 def build_runtime_preparation_plan(cfg, pose=None):
     """Build a backend-neutral runtime preparation plan from pipeline config."""
     runtime_cfg = dict((cfg or {}).get("runtime", {}) or {})
@@ -103,23 +175,25 @@ def build_runtime_preparation_plan(cfg, pose=None):
         default=DEFAULT_ALLOWED_CONSOLE_PREFIXES,
     )
 
-    commands = []
-    post_capture_commands = []
+    trusted_commands = []
+    trusted_post_capture_commands = []
 
     if profile in CITYSAMPLE_PROFILES:
         city_commands, city_post_capture_commands = _citysample_commands(runtime_cfg)
-        commands.extend(city_commands)
-        post_capture_commands.extend(city_post_capture_commands)
+        trusted_commands.extend(city_commands)
+        trusted_post_capture_commands.extend(city_post_capture_commands)
 
-    commands.extend(_tuple_text(runtime_cfg.get("console_commands"), default=()))
-    post_capture_commands.extend(
-        _tuple_text(runtime_cfg.get("post_capture_console_commands"), default=())
-    )
-
-    accepted, rejected = _filter_console_commands(commands, allowed_prefixes)
-    post_accepted, post_rejected = _filter_console_commands(
-        post_capture_commands,
+    extra_accepted, rejected = _filter_console_commands(
+        _tuple_text(runtime_cfg.get("console_commands"), default=()),
         allowed_prefixes,
+    )
+    extra_post_accepted, post_rejected = _filter_console_commands(
+        _tuple_text(runtime_cfg.get("post_capture_console_commands"), default=()),
+        allowed_prefixes,
+    )
+    accepted = _dedupe_console_commands(trusted_commands + extra_accepted)
+    post_accepted = _dedupe_console_commands(
+        trusted_post_capture_commands + extra_post_accepted
     )
     should_move_player = _parse_bool(
         runtime_cfg.get("move_player_to_capture"),
@@ -138,7 +212,7 @@ def build_runtime_preparation_plan(cfg, pose=None):
         move_player_to_capture=should_move_player,
         restore_player_after_capture=_parse_bool(
             runtime_cfg.get("restore_player_after_capture"),
-            default=should_move_player,
+            default=(should_move_player and profile not in CITYSAMPLE_PROFILES),
         ),
         hide_player_during_capture=_parse_bool(
             runtime_cfg.get("hide_player_during_capture"),
@@ -207,31 +281,22 @@ def _filter_console_commands(commands, allowed_prefixes):
     return accepted, rejected
 
 
+def _dedupe_console_commands(commands):
+    accepted = []
+    seen = set()
+    for raw_command in commands:
+        command = str(raw_command or "").strip()
+        if not command or command in seen:
+            continue
+        accepted.append(command)
+        seen.add(command)
+    return accepted
+
+
 def _citysample_commands(runtime_cfg):
     city_cfg = dict(runtime_cfg.get("citysample", {}) or {})
     commands = []
     post_capture_commands = []
-
-    disable_fastgeo_transformer = _parse_bool(
-        city_cfg.get(
-            "disable_fastgeo_transformer_for_semantic_capture",
-            runtime_cfg.get("disable_fastgeo_transformer_for_semantic_capture"),
-        ),
-        default=False,
-    )
-    restore_fastgeo_transformer = _parse_bool(
-        city_cfg.get(
-            "restore_fastgeo_transformer_after_capture",
-            runtime_cfg.get("restore_fastgeo_transformer_after_capture"),
-        ),
-        default=disable_fastgeo_transformer,
-    )
-
-    if disable_fastgeo_transformer:
-        commands.append("FastGeo.EnableTransformer 0")
-
-        if restore_fastgeo_transformer:
-            post_capture_commands.append("FastGeo.EnableTransformer 1")
 
     main_grid_range = _parse_int(
         city_cfg.get("main_grid_loading_range", runtime_cfg.get("main_grid_loading_range")),
@@ -259,6 +324,52 @@ def _citysample_commands(runtime_cfg):
     )
 
     return commands, post_capture_commands
+
+
+def _citysample_play_session_commands(runtime_cfg):
+    city_cfg = dict(runtime_cfg.get("citysample", {}) or {})
+    pre_play_commands = []
+    post_play_commands = []
+
+    legacy_disable_fastgeo = _parse_bool(
+        city_cfg.get(
+            "disable_fastgeo_transformer_for_semantic_capture",
+            runtime_cfg.get("disable_fastgeo_transformer_for_semantic_capture"),
+        ),
+        default=False,
+    )
+    configured_disable_before_play = _parse_bool(
+        city_cfg.get(
+            "disable_fastgeo_transformer_before_play",
+            runtime_cfg.get("disable_fastgeo_transformer_before_play"),
+        ),
+        default=False,
+    )
+    disable_fastgeo_before_play = (
+        configured_disable_before_play or legacy_disable_fastgeo
+    )
+    legacy_restore_fastgeo = _parse_bool(
+        city_cfg.get(
+            "restore_fastgeo_transformer_after_capture",
+            runtime_cfg.get("restore_fastgeo_transformer_after_capture"),
+        ),
+        default=legacy_disable_fastgeo,
+    )
+    restore_fastgeo_after_play = _parse_bool(
+        city_cfg.get(
+            "restore_fastgeo_transformer_after_play",
+            runtime_cfg.get("restore_fastgeo_transformer_after_play"),
+        ),
+        default=(legacy_restore_fastgeo if legacy_disable_fastgeo else disable_fastgeo_before_play),
+    )
+
+    if disable_fastgeo_before_play:
+        pre_play_commands.append("FastGeo.EnableTransformer 0")
+
+        if restore_fastgeo_after_play:
+            post_play_commands.append("FastGeo.EnableTransformer 1")
+
+    return pre_play_commands, post_play_commands
 
 
 def _normalize_profile(value):

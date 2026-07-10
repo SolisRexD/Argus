@@ -10,7 +10,9 @@ from .png import force_png_alpha_opaque
 from .runtime import (
     DEFAULT_ALLOWED_CONSOLE_PREFIXES,
     CapturePoint,
+    RuntimePlaySessionPlan,
     RuntimePreparationPlan,
+    build_runtime_play_session_plan,
     build_runtime_preparation_plan,
     capture_point_from_pose,
     is_console_command_allowed,
@@ -19,7 +21,9 @@ from .runtime import (
 __all__ = [
     "DEFAULT_ALLOWED_CONSOLE_PREFIXES",
     "CapturePoint",
+    "RuntimePlaySessionPlan",
     "RuntimePreparationPlan",
+    "build_runtime_play_session_plan",
     "build_runtime_preparation_plan",
     "capture_point_from_pose",
     "check_required_stream_files",

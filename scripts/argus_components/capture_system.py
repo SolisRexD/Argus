@@ -28,6 +28,7 @@ import unreal
 from argus_core.capture import force_png_alpha_opaque
 
 from .runtime_control import RuntimeCaptureController
+from .runtime_session import RuntimePlaySessionController
 from .runtime_semantics import RuntimeSemanticStencilController
 
 from common import (
@@ -521,6 +522,60 @@ class BaseCaptureService:
             except Exception:
                 pass
 
+    def _clear_post_process_materials(self, scene_capture_comp):
+        """Clear stale weighted blendables from a capture component."""
+        settings = scene_capture_comp.get_editor_property("post_process_settings")
+        weighted = settings.get_editor_property("weighted_blendables")
+        weighted.array = []
+        settings.set_editor_property("weighted_blendables", weighted)
+        scene_capture_comp.set_editor_property("post_process_settings", settings)
+
+    def _set_post_process_material(self, scene_capture_comp, material):
+        """Set one full-weight post-process material on a capture component."""
+        settings = scene_capture_comp.get_editor_property("post_process_settings")
+        weighted = settings.get_editor_property("weighted_blendables")
+
+        blendable = unreal.WeightedBlendable()
+        blendable.object = material
+        blendable.weight = 1.0
+        weighted.array = [blendable]
+
+        settings.set_editor_property("weighted_blendables", weighted)
+        scene_capture_comp.set_editor_property("post_process_settings", settings)
+
+    def _configure_stream_post_process(self, component, stream, assets, material_cache):
+        """Apply the configured post-process state for one capture stream."""
+        self._clear_post_process_materials(component)
+
+        try:
+            component.set_editor_property("post_process_blend_weight", 0.0)
+        except Exception:
+            pass
+
+        if not stream.apply_post_process:
+            return
+
+        material_name = stream.post_process_material_name or assets.get(
+            "material_name",
+            "",
+        )
+        if not material_name:
+            raise RuntimeError(
+                "Stream {} requires a post-process material name".format(stream.name)
+            )
+
+        if material_name not in material_cache:
+            material_cache[material_name] = load_asset_or_raise(
+                "{}/{}".format(assets["root"], material_name)
+            )
+
+        self._set_post_process_material(component, material_cache[material_name])
+
+        try:
+            component.set_editor_property("post_process_blend_weight", 1.0)
+        except Exception:
+            pass
+
     def _make_png_opaque(self, path):
         """
         将 PNG 图片的 alpha 通道强制改为 255。
@@ -584,41 +639,6 @@ class DualCaptureSetupService(BaseCaptureService):
         actor.set_actor_label(label)
         mark_actor_always_loaded_for_world_partition(actor)
         return actor
-
-    def _clear_post_process_materials(self, scene_capture_comp):
-        """
-        清空 SceneCaptureComponent2D 上已有的后处理材质。
-
-        这样可以避免重复运行 setup 时，
-        旧的后处理材质残留在 weighted_blendables 中。
-        """
-        settings = scene_capture_comp.get_editor_property("post_process_settings")
-        weighted = settings.get_editor_property("weighted_blendables")
-
-        weighted.array = []
-
-        settings.set_editor_property("weighted_blendables", weighted)
-        scene_capture_comp.set_editor_property("post_process_settings", settings)
-
-    def _set_post_process_material(self, scene_capture_comp, material):
-        """
-        给 SceneCaptureComponent2D 设置一个后处理材质。
-
-        常见用途：
-        - mask stream 挂语义 mask 后处理材质。
-        - debug stream 挂调试后处理材质。
-        """
-        settings = scene_capture_comp.get_editor_property("post_process_settings")
-        weighted = settings.get_editor_property("weighted_blendables")
-
-        wb = unreal.WeightedBlendable()
-        wb.object = material
-        wb.weight = 1.0
-
-        weighted.array = [wb]
-
-        settings.set_editor_property("weighted_blendables", weighted)
-        scene_capture_comp.set_editor_property("post_process_settings", settings)
 
     def _attach_if_possible(self, parent_actor, child_actor):
         """
@@ -691,29 +711,12 @@ class DualCaptureSetupService(BaseCaptureService):
             capture_source_name = stream.capture_source or capture_cfg.get("capture_source", "")
 
             self._configure_component(component, rt, capture_source_name, capture_cfg)
-
-            self._clear_post_process_materials(component)
-
-            try:
-                component.set_editor_property("post_process_blend_weight", 0.0)
-            except Exception:
-                pass
-
-            if stream.apply_post_process:
-                mat_name = stream.post_process_material_name or assets.get("material_name", "")
-
-                if not mat_name:
-                    raise RuntimeError("Stream {} 需要配置后处理材质名称".format(stream.name))
-
-                if mat_name not in material_cache:
-                    material_cache[mat_name] = load_asset_or_raise("{}/{}".format(asset_root, mat_name))
-
-                self._set_post_process_material(component, material_cache[mat_name])
-
-                try:
-                    component.set_editor_property("post_process_blend_weight", 1.0)
-                except Exception:
-                    pass
+            self._configure_stream_post_process(
+                component,
+                stream,
+                assets,
+                material_cache,
+            )
 
             stream_states[stream.name] = {
                 "stream": stream,
@@ -794,6 +797,7 @@ class CaptureService(BaseCaptureService):
 
     def __init__(self):
         self.intrinsics_manager = CameraIntrinsicsManager()
+        self.runtime_session_controller = RuntimePlaySessionController()
         self.runtime_controller = RuntimeCaptureController()
         self.semantic_stencil_controller = RuntimeSemanticStencilController()
 
@@ -835,6 +839,7 @@ class CaptureService(BaseCaptureService):
         assets = cfg["assets"]
         capture_cfg = cfg["capture"]
         output_cfg = cfg["output"]
+        play_session_plan = self.runtime_session_controller.validate_capture_session(cfg)
 
         out_dir = resolve_path(output_cfg["capture_dir"])
         ensure_dir(out_dir)
@@ -844,6 +849,7 @@ class CaptureService(BaseCaptureService):
         primary_stream = registry.get_primary_stream(streams)
 
         asset_root = assets["root"]
+        material_cache = {}
         states = {}
 
         for stream in streams:
@@ -874,6 +880,12 @@ class CaptureService(BaseCaptureService):
                 rt,
                 capture_source_name,
                 capture_cfg,
+            )
+            self._configure_stream_post_process(
+                component,
+                stream,
+                assets,
+                material_cache,
             )
 
             states[stream.name] = {
@@ -983,6 +995,10 @@ class CaptureService(BaseCaptureService):
             "roll": primary_rot.roll,
             "files_json": json.dumps(files, ensure_ascii=False),
             "primary_stream": primary_stream.name,
+            "runtime_play_session_plan_json": json.dumps(
+                play_session_plan.to_metadata(),
+                ensure_ascii=False,
+            ),
             "runtime_plan_json": json.dumps(runtime_plan.to_metadata(), ensure_ascii=False),
             "semantic_stencil_json": json.dumps(semantic_stencil_stats, ensure_ascii=False),
             **intrinsics_meta,

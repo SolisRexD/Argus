@@ -44,3 +44,21 @@ def test_finish_after_capture_executes_post_capture_console_commands(monkeypatch
         ("restore", None),
         ("paused", False),
     ]
+
+
+def test_finish_after_capture_does_not_restore_player_when_disabled(monkeypatch):
+    module = import_runtime_control(monkeypatch)
+
+    events = []
+    controller = module.RuntimeCaptureController()
+    controller._restore_player_streaming_source = lambda: events.append("restore")
+
+    plan = RuntimePreparationPlan(
+        enabled=True,
+        move_player_to_capture=True,
+        restore_player_after_capture=False,
+    )
+
+    controller.finish_after_capture(plan)
+
+    assert events == []

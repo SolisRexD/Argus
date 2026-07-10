@@ -3,6 +3,7 @@ from pathlib import Path
 
 from argus_core.capture import (
     DEFAULT_ALLOWED_CONSOLE_PREFIXES,
+    build_runtime_play_session_plan,
     build_runtime_preparation_plan,
     is_console_command_allowed,
 )
@@ -17,16 +18,53 @@ def test_runtime_preparation_is_disabled_by_default():
     assert plan.pause_after_warmup is False
 
 
-def test_project_pipeline_config_enables_citysample_fastgeo_semantic_capture():
+def test_project_pipeline_config_prepares_fastgeo_before_play():
     root = Path(__file__).resolve().parents[1]
     cfg = json.loads((root / "config" / "pipeline_config.json").read_text())
 
-    plan = build_runtime_preparation_plan(cfg, pose={"x": 1, "y": 2, "z": 3})
+    play_plan = build_runtime_play_session_plan(cfg)
+    capture_plan = build_runtime_preparation_plan(
+        cfg,
+        pose={"x": 1, "y": 2, "z": 3},
+    )
 
-    assert "FastGeo.EnableTransformer 0" in plan.console_commands
-    assert plan.post_capture_console_commands == ("FastGeo.EnableTransformer 1",)
+    assert play_plan.pre_play_console_commands == ("FastGeo.EnableTransformer 0",)
+    assert play_plan.post_play_console_commands == ("FastGeo.EnableTransformer 1",)
+    assert "FastGeo.EnableTransformer 0" not in capture_plan.console_commands
+    assert capture_plan.post_capture_console_commands == ()
+    assert capture_plan.restore_player_after_capture is False
     assert cfg["runtime"]["auto_semantic_stencil"]["max_components"] == 0
     assert cfg["runtime"]["auto_semantic_stencil"]["component_order"] == "capture_distance"
+
+
+def test_citysample_play_session_plan_can_disable_and_restore_fastgeo():
+    cfg = {
+        "runtime": {
+            "enabled": True,
+            "profile": "citysample_bigcity",
+            "citysample": {
+                "disable_fastgeo_transformer_before_play": True,
+                "restore_fastgeo_transformer_after_play": True,
+                "disable_fastgeo_transformer_for_semantic_capture": True,
+                "restore_fastgeo_transformer_after_capture": True,
+            },
+        }
+    }
+
+    play_plan = build_runtime_play_session_plan(cfg)
+    capture_plan = build_runtime_preparation_plan(
+        cfg,
+        pose={"x": 1, "y": 2, "z": 3},
+    )
+
+    assert play_plan.enabled is True
+    assert play_plan.profile == "citysample_bigcity"
+    assert play_plan.pre_play_console_commands == ("FastGeo.EnableTransformer 0",)
+    assert play_plan.post_play_console_commands == ("FastGeo.EnableTransformer 1",)
+    assert play_plan.rejected_pre_play_console_commands == ()
+    assert play_plan.rejected_post_play_console_commands == ()
+    assert "FastGeo.EnableTransformer 0" not in capture_plan.console_commands
+    assert capture_plan.post_capture_console_commands == ()
 
 
 def test_citysample_bigcity_profile_generates_world_partition_commands():
@@ -64,10 +102,10 @@ def test_citysample_bigcity_profile_generates_world_partition_commands():
         "wp.Runtime.HLOD.WarmupEnabled 0",
     )
     assert plan.move_player_to_capture is True
-    assert plan.restore_player_after_capture is True
+    assert plan.restore_player_after_capture is False
 
 
-def test_citysample_runtime_plan_can_disable_and_restore_fastgeo_transformer():
+def test_legacy_citysample_fastgeo_config_migrates_to_play_session_boundary():
     cfg = {
         "runtime": {
             "enabled": True,
@@ -79,15 +117,48 @@ def test_citysample_runtime_plan_can_disable_and_restore_fastgeo_transformer():
         }
     }
 
-    plan = build_runtime_preparation_plan(cfg, pose={"x": 1, "y": 2, "z": 3})
-
-    assert plan.console_commands[0] == "FastGeo.EnableTransformer 0"
-    assert "wp.Runtime.OverrideRuntimeSpatialHashLoadingRange -grid=0 -range=12800" in (
-        plan.console_commands
+    play_plan = build_runtime_play_session_plan(cfg)
+    capture_plan = build_runtime_preparation_plan(
+        cfg,
+        pose={"x": 1, "y": 2, "z": 3},
     )
-    assert plan.post_capture_console_commands == ("FastGeo.EnableTransformer 1",)
-    assert plan.rejected_console_commands == ()
-    assert plan.rejected_post_capture_console_commands == ()
+
+    assert play_plan.pre_play_console_commands == ("FastGeo.EnableTransformer 0",)
+    assert play_plan.post_play_console_commands == ("FastGeo.EnableTransformer 1",)
+    assert "FastGeo.EnableTransformer 0" not in capture_plan.console_commands
+    assert "wp.Runtime.OverrideRuntimeSpatialHashLoadingRange -grid=0 -range=12800" in (
+        capture_plan.console_commands
+    )
+    assert capture_plan.post_capture_console_commands == ()
+    assert capture_plan.rejected_console_commands == ()
+    assert capture_plan.rejected_post_capture_console_commands == ()
+
+
+def test_internal_citysample_commands_bypass_user_console_allowlist():
+    cfg = {
+        "runtime": {
+            "enabled": True,
+            "profile": "citysample_bigcity",
+            "allowed_console_prefixes": ["wp.Runtime."],
+            "citysample": {
+                "disable_fastgeo_transformer_before_play": True,
+            },
+        }
+    }
+
+    play_plan = build_runtime_play_session_plan(cfg)
+    capture_plan = build_runtime_preparation_plan(
+        cfg,
+        pose={"x": 1, "y": 2, "z": 3},
+    )
+
+    assert play_plan.pre_play_console_commands == ("FastGeo.EnableTransformer 0",)
+    assert play_plan.rejected_pre_play_console_commands == ()
+    assert capture_plan.console_commands == (
+        "wp.Runtime.OverrideRuntimeSpatialHashLoadingRange -grid=0 -range=12800",
+        "wp.Runtime.OverrideRuntimeSpatialHashLoadingRange -grid=1 -range=76800",
+        "wp.Runtime.HLOD.WarmupEnabled 1",
+    )
 
 
 def test_runtime_plan_allows_disabling_player_streaming_source_move():
@@ -104,6 +175,20 @@ def test_runtime_plan_allows_disabling_player_streaming_source_move():
 
     assert plan.move_player_to_capture is False
     assert plan.restore_player_after_capture is False
+
+
+def test_generic_runtime_plan_preserves_player_restore_default():
+    cfg = {
+        "runtime": {
+            "enabled": True,
+            "profile": "generic",
+            "move_player_to_capture": True,
+        }
+    }
+
+    plan = build_runtime_preparation_plan(cfg, pose={"x": 1, "y": 2, "z": 3})
+
+    assert plan.restore_player_after_capture is True
 
 
 def test_citysample_runtime_plan_hides_and_offsets_player_streaming_source():

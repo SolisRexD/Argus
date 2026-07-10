@@ -87,15 +87,17 @@
     "resume_after_capture": true,
     "wait_for_streaming": true,
     "move_player_to_capture": true,
-    "restore_player_after_capture": true,
+    "restore_player_after_capture": false,
     "hide_player_during_capture": true,
     "player_streaming_source_z_offset_cm": 5000.0,
     "citysample": {
       "main_grid_loading_range": 12800,
       "hlod0_loading_range": 76800,
       "hlod_warmup_enabled": true,
-      "disable_fastgeo_transformer_for_semantic_capture": true,
-      "restore_fastgeo_transformer_after_capture": true
+      "disable_fastgeo_transformer_before_play": true,
+      "restore_fastgeo_transformer_after_play": true,
+      "disable_fastgeo_transformer_for_semantic_capture": false,
+      "restore_fastgeo_transformer_after_capture": false
     },
     "console_commands": [],
     "auto_semantic_stencil": {
