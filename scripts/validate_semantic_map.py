@@ -108,6 +108,11 @@ def _write_csv(path, rows):
         "render_main_pass",
         "render_custom_depth",
         "stencil",
+        "target_type",
+        "backend",
+        "strategy",
+        "strategy_executable",
+        "strategy_reason",
         "message",
         "translucent_risk",
         "ignore_stencil",
@@ -196,24 +201,22 @@ def validate_semantic_map(config_path=None):
 
     rule_builder = SemanticRuleBuilder(sem_cfg, ignore_stencil)
 
+    contexts = [rule_builder.build_context(rule) for rule in rules]
     rows = []
-
     duplicate_counter = {}
 
-    for r in rules:
-        k = _compose_match_key(r)
+    for row_ctx in contexts:
+        k = _compose_match_key(row_ctx.match_rule())
         duplicate_counter[k] = duplicate_counter.get(k, 0) + 1
 
-    for i, rule in enumerate(rules, start=1):
-        row_ctx = rule_builder.build_context(rule)
-
+    for i, row_ctx in enumerate(contexts, start=1):
         render_main_pass = row_ctx.render_main_pass
         render_custom_depth = row_ctx.render_custom_depth
         stencil = row_ctx.stencil
 
         descriptor, resolve_status = scene_catalog.resolve_component_descriptor(
             component_index,
-            rule,
+            row_ctx.match_rule(),
         )
 
         status = "ok"
@@ -251,8 +254,22 @@ def validate_semantic_map(config_path=None):
                 "render_custom_depth=true 但 stencil 缺失",
             )
 
-        # 4. 重复规则检查
-        duplicate_count = duplicate_counter.get(_compose_match_key(rule), 0)
+        # 4. 后端能力检查。当前 UE CustomStencil 不能精确实现材质槽和实例级标签。
+        if render_custom_depth and not row_ctx.strategy_decision.executable:
+            status, severity, message = _append_issue(
+                status,
+                severity,
+                message,
+                row_ctx.strategy_decision.kind.value,
+                "warning",
+                row_ctx.strategy_decision.reason,
+            )
+
+        # 5. 重复规则检查
+        duplicate_count = duplicate_counter.get(
+            _compose_match_key(row_ctx.match_rule()),
+            0,
+        )
         if duplicate_count > 1:
             status, severity, message = _append_issue(
                 status,
@@ -263,7 +280,7 @@ def validate_semantic_map(config_path=None):
                 "重复匹配规则出现 {} 次".format(duplicate_count),
             )
 
-        # 5. 组件是否支持 CustomDepth / Stencil
+        # 6. 组件是否支持 CustomDepth / Stencil
         component = descriptor.get("component_ref") if descriptor else None
 
         if component and not annotator.supports_stencil(component):
@@ -276,7 +293,7 @@ def validate_semantic_map(config_path=None):
                 "组件不支持 CustomDepth / CustomStencil",
             )
 
-        # 6. 半透明材质风险检查
+        # 7. 半透明材质风险检查
         # 如果该组件要进入 mask，则检查它的材质是否可能不写入 CustomDepth。
         if component and render_custom_depth:
             translucent_risk = annotator.inspect_translucent_material_risk(component)
@@ -296,18 +313,25 @@ def validate_semantic_map(config_path=None):
                 "row_index": i,
                 "status": status,
                 "severity": severity,
-                "actor_name": str(rule.get("actor_name", "")).strip(),
-                "component_name": str(rule.get("component_name", "")).strip(),
-                "mesh_name": str(rule.get("mesh_name", "")).strip(),
-                "mesh_path": str(rule.get("mesh_path", "")).strip(),
-                "material_name": str(rule.get("material_name", "")).strip(),
-                "material_path": str(rule.get("material_path", "")).strip(),
-                "material_slot": str(rule.get("material_slot", "")).strip(),
-                "instance_index": "" if rule.get("instance_index") is None else rule.get("instance_index"),
-                "semantic_class": str(rule.get("semantic_class", "")).strip(),
+                "actor_name": row_ctx.actor_name,
+                "component_name": row_ctx.component_name,
+                "mesh_name": row_ctx.mesh_name,
+                "mesh_path": row_ctx.mesh_path,
+                "material_name": row_ctx.material_name,
+                "material_path": row_ctx.material_path,
+                "material_slot": row_ctx.material_slot,
+                "instance_index": ""
+                if row_ctx.instance_index is None
+                else row_ctx.instance_index,
+                "semantic_class": row_ctx.semantic_class,
                 "render_main_pass": render_main_pass,
                 "render_custom_depth": render_custom_depth,
                 "stencil": "" if stencil is None else stencil,
+                "target_type": row_ctx.annotation_rule.target.target_type.value,
+                "backend": row_ctx.strategy_decision.backend,
+                "strategy": row_ctx.strategy_decision.kind.value,
+                "strategy_executable": row_ctx.strategy_decision.executable,
+                "strategy_reason": row_ctx.strategy_decision.reason,
                 "message": message,
                 "translucent_risk": translucent_risk,
                 "ignore_stencil": ignore_stencil,

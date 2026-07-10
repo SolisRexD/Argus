@@ -1,4 +1,4 @@
-"""Backend capability and annotation strategy planning."""
+"""Backend-independent capability and annotation strategy planning."""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -7,101 +7,131 @@ from argus_core.model import AnnotationRule, RenderPolicy, TargetType
 
 
 class StrategyKind(str, Enum):
-    """Known backend execution strategies."""
+    """Generic execution strategies selected from backend capabilities."""
 
-    UE_COMPONENT_STENCIL = "ue_component_stencil"
-    UE_PROXY_STENCIL = "ue_proxy_stencil"
-    UE_REQUIRES_MATERIAL_SPLIT = "ue_requires_material_split"
-    UE_REQUIRES_INSTANCE_SPLIT = "ue_requires_instance_split"
+    DIRECT_COMPONENT = "direct_component"
+    DIRECT_MATERIAL_SLOT = "direct_material_slot"
+    DIRECT_INSTANCE = "direct_instance"
+    DIRECT_PROXY = "direct_proxy"
+    REQUIRES_MATERIAL_SPLIT = "requires_material_split"
+    REQUIRES_INSTANCE_SPLIT = "requires_instance_split"
     UNSUPPORTED = "unsupported"
     NOOP = "noop"
 
 
 @dataclass(frozen=True)
 class BackendCapabilities:
-    """Capabilities advertised by an engine backend."""
+    """Target granularities that a backend can label directly."""
 
     name: str
-    component_custom_stencil: bool = False
-    material_slot_custom_stencil: bool = False
-    instance_custom_stencil: bool = False
-    proxy_custom_stencil: bool = False
-
-    @classmethod
-    def ue_default(cls):
-        return cls(
-            name="ue",
-            component_custom_stencil=True,
-            material_slot_custom_stencil=False,
-            instance_custom_stencil=False,
-            proxy_custom_stencil=True,
-        )
+    component_labeling: bool = False
+    material_slot_labeling: bool = False
+    instance_labeling: bool = False
+    proxy_labeling: bool = False
 
 
 @dataclass(frozen=True)
 class StrategyDecision:
     """Planner decision for one normalized annotation rule."""
 
+    backend: str
     kind: StrategyKind
     executable: bool
     reason: str
 
 
 def choose_strategy(rule: AnnotationRule, capabilities: BackendCapabilities):
-    """Choose a backend strategy for one annotation rule."""
+    """Choose a strategy solely from target type and advertised capabilities."""
+    if rule.invalid_target_type:
+        return _decision(
+            capabilities,
+            StrategyKind.UNSUPPORTED,
+            False,
+            "Invalid target_type '{}'.".format(rule.target_type_raw),
+        )
+
     if rule.render_policy in {
         RenderPolicy.VISIBLE_UNLABELED,
         RenderPolicy.HIDDEN_UNLABELED,
     }:
-        return StrategyDecision(
-            kind=StrategyKind.NOOP,
-            executable=True,
-            reason="Rule does not enter the mask stream.",
+        return _decision(
+            capabilities,
+            StrategyKind.NOOP,
+            True,
+            "Rule does not enter the mask stream.",
         )
 
-    if capabilities.name == "ue":
-        return _choose_ue_strategy(rule, capabilities)
-
-    return StrategyDecision(
-        kind=StrategyKind.UNSUPPORTED,
-        executable=False,
-        reason="Backend '{}' is not supported by this planner.".format(capabilities.name),
-    )
-
-
-def _choose_ue_strategy(rule, capabilities):
     target_type = rule.target.target_type
 
-    if target_type == TargetType.COMPONENT and capabilities.component_custom_stencil:
-        return StrategyDecision(
-            kind=StrategyKind.UE_COMPONENT_STENCIL,
-            executable=True,
-            reason="UE can apply CustomStencil directly to primitive components.",
-        )
-
-    if target_type == TargetType.PROXY and capabilities.proxy_custom_stencil:
-        return StrategyDecision(
-            kind=StrategyKind.UE_PROXY_STENCIL,
-            executable=True,
-            reason="UE can apply CustomStencil to an explicit proxy component.",
-        )
+    if target_type == TargetType.COMPONENT:
+        if capabilities.component_labeling:
+            return _decision(
+                capabilities,
+                StrategyKind.DIRECT_COMPONENT,
+                True,
+                "Backend can label the component target directly.",
+            )
+        return _unsupported(capabilities, target_type)
 
     if target_type == TargetType.MATERIAL_SLOT:
-        return StrategyDecision(
-            kind=StrategyKind.UE_REQUIRES_MATERIAL_SPLIT,
-            executable=False,
-            reason="UE CustomStencil is component-level; material slot targets require material slot split or proxy geometry.",
+        if capabilities.material_slot_labeling:
+            return _decision(
+                capabilities,
+                StrategyKind.DIRECT_MATERIAL_SLOT,
+                True,
+                "Backend can label the material slot target directly.",
+            )
+        return _decision(
+            capabilities,
+            StrategyKind.REQUIRES_MATERIAL_SPLIT,
+            False,
+            "Backend cannot label a material slot directly; split or proxy geometry is required.",
         )
 
     if target_type == TargetType.INSTANCE:
-        return StrategyDecision(
-            kind=StrategyKind.UE_REQUIRES_INSTANCE_SPLIT,
-            executable=False,
-            reason="UE CustomStencil is component-level; instanced targets require instance split or proxy instances.",
+        if capabilities.instance_labeling:
+            return _decision(
+                capabilities,
+                StrategyKind.DIRECT_INSTANCE,
+                True,
+                "Backend can label the instance target directly.",
+            )
+        return _decision(
+            capabilities,
+            StrategyKind.REQUIRES_INSTANCE_SPLIT,
+            False,
+            "Backend cannot label one instance directly; instance extraction or a proxy is required.",
         )
 
+    if target_type == TargetType.PROXY:
+        if capabilities.proxy_labeling:
+            return _decision(
+                capabilities,
+                StrategyKind.DIRECT_PROXY,
+                True,
+                "Backend can label the explicit proxy target directly.",
+            )
+        return _unsupported(capabilities, target_type)
+
+    return _unsupported(capabilities, target_type)
+
+
+def _unsupported(capabilities, target_type):
+    return _decision(
+        capabilities,
+        StrategyKind.UNSUPPORTED,
+        False,
+        "Backend '{}' cannot label target type '{}' directly.".format(
+            capabilities.name,
+            target_type.value,
+        ),
+    )
+
+
+def _decision(capabilities, kind, executable, reason):
     return StrategyDecision(
-        kind=StrategyKind.UNSUPPORTED,
-        executable=False,
-        reason="No UE strategy is available for target type '{}'.".format(target_type.value),
+        backend=capabilities.name,
+        kind=kind,
+        executable=bool(executable),
+        reason=reason,
     )

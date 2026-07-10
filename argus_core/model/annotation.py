@@ -39,18 +39,17 @@ class AnnotationTarget:
 
     @classmethod
     def from_legacy_row(cls, row):
+        explicit_target_type = _target_type(row.get("target_type"))
         instance_index = _optional_int(row.get("instance_index"))
         proxy_id = _text(row.get("proxy_id"))
         material_slot = _text(row.get("material_slot"))
         material_name = _text(row.get("material_name"))
         material_path = _text(row.get("material_path"))
 
-        if proxy_id:
+        if explicit_target_type is not None:
+            target_type = explicit_target_type
+        elif proxy_id:
             target_type = TargetType.PROXY
-        elif instance_index is not None:
-            target_type = TargetType.INSTANCE
-        elif material_slot or material_name or material_path:
-            target_type = TargetType.MATERIAL_SLOT
         else:
             target_type = TargetType.COMPONENT
 
@@ -78,11 +77,14 @@ class AnnotationRule:
     effective_stencil: int | None
     stencil_override: int | None = None
     invalid_render_switches: bool = False
+    target_type_raw: str = ""
+    invalid_target_type: bool = False
     extra_fields: dict = field(default_factory=dict)
 
     @classmethod
     def from_legacy_row(cls, row, unknown_stencil=250, ignore_stencil=254):
         target = AnnotationTarget.from_legacy_row(row)
+        target_type_raw = _text(row.get("target_type")).lower()
         render_main, main_invalid = _parse_bool(row.get("render_main_pass"))
         render_depth, depth_invalid = _parse_bool(row.get("render_custom_depth"))
         semantic_class = _text(row.get("semantic_class"))
@@ -103,6 +105,10 @@ class AnnotationRule:
             effective_stencil=effective_stencil,
             stencil_override=stencil_override,
             invalid_render_switches=bool(main_invalid or depth_invalid),
+            target_type_raw=target_type_raw,
+            invalid_target_type=bool(
+                target_type_raw and _target_type(target_type_raw) is None
+            ),
             extra_fields=_extra_fields(row),
         )
 
@@ -136,12 +142,23 @@ def _optional_int(value):
         return None
 
 
+def _target_type(value):
+    text = _text(value).lower()
+    if not text:
+        return None
+    try:
+        return TargetType(text)
+    except ValueError:
+        return None
+
+
 def _text(value):
     return str(value or "").strip()
 
 
 def _extra_fields(row):
     known = {
+        "target_type",
         "actor_name",
         "component_name",
         "mesh_name",

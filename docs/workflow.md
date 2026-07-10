@@ -211,6 +211,7 @@ config/semantic_map_template.csv
 
 | 字段 | 是否必填 | 说明 |
 |---|---:|---|
+| `target_type` | 否 | 默认 `component`；可选 `material_slot`、`instance`、`proxy` |
 | `actor_name` | 是 | Actor Label |
 | `component_name` | 是 | 组件名 |
 | `semantic_class` | 是 | 语义类别 |
@@ -221,8 +222,12 @@ config/semantic_map_template.csv
 | `mesh_path` | 否 | 用于同名组件消歧 |
 | `material_name` | 否 | 用于材质消歧 |
 | `material_path` | 否 | 用于材质消歧 |
-| `material_slot` | 否 | 用于材质槽消歧 |
-| `instance_index` | 否 | 用于实例化组件定位与校验 |
+| `material_slot` | 否 | 默认用于组件消歧；`target_type=material_slot` 时表示真实材质槽目标 |
+| `instance_index` | 否 | 默认用于组件定位；`target_type=instance` 时表示真实实例目标 |
+
+不要仅根据 `material_name`、`material_path`、`material_slot` 或 `instance_index` 推断目标粒度。旧语义表会把这些字段用于组件消歧，因此只有显式 `target_type` 才会启用子组件级规划。
+
+当前 UE CustomStencil backend 直接支持组件级规则。材质槽和实例级规则会进入核心 planner，但在实现 mesh/material split 或 proxy instance 前，校验和 writeback 日志会明确标记 deferred，且不会修改整个组件的 stencil。
 
 布尔字段支持：
 
@@ -377,6 +382,7 @@ output/semantic_map_validation.csv
 - `render_main_pass` 是否缺失或非法；
 - `render_custom_depth` 是否缺失或非法；
 - 进入 MASK 时 stencil 是否缺失；
+- `target_type` 是否能由当前 backend 精确执行；
 - 是否存在重复规则；
 - 组件是否支持 CustomDepth / CustomStencil；
 - 半透明材质是否可能未开启 `Allow Custom Depth Writes`。
@@ -393,6 +399,8 @@ output/semantic_map_validation.csv
 | `missing_stencil` | 进入 MASK 但 stencil 缺失 |
 | `duplicate_rule` | 重复规则 |
 | `component_unsupported` | 组件不支持 CustomDepth / CustomStencil |
+| `requires_material_split` | UE CustomStencil 无法直接表达材质槽级标签，未执行写回 |
+| `requires_instance_split` | UE CustomStencil 无法直接表达单实例标签，未执行写回 |
 | `translucent_custom_depth_risk` | 半透明材质可能没有写入 CustomDepth |
 
 建议只有在没有 error 后，再执行正式回写。

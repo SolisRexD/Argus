@@ -469,6 +469,7 @@ ignore,254,0,0,0
 
 | 字段 | 必填 | 说明 |
 |---|---:|---|
+| `target_type` | 否 | 目标粒度，默认 `component`；可选 `material_slot`、`instance`、`proxy` |
 | `actor_name` | 是 | Actor Label |
 | `component_name` | 是 | Component 名称 |
 | `semantic_class` | 是 | 语义类别 |
@@ -479,8 +480,10 @@ ignore,254,0,0,0
 | `mesh_path` | 否 | 用于同名组件消歧 |
 | `material_name` | 否 | 用于材质消歧 |
 | `material_path` | 否 | 用于材质消歧 |
-| `material_slot` | 否 | 用于材质槽消歧 |
-| `instance_index` | 否 | 用于实例化组件定位与校验 |
+| `material_slot` | 否 | 默认用于组件消歧；仅当 `target_type=material_slot` 时要求材质槽级标签 |
+| `instance_index` | 否 | 默认用于组件定位；仅当 `target_type=instance` 时要求实例级标签 |
+
+当前 UE CustomStencil 后端可以直接执行 `component`，以及已经由普通 PrimitiveComponent 表示的 `proxy`。`material_slot` 和 `instance` 会被核心 planner 接受，但校验结果会标记为 `requires_material_split` 或 `requires_instance_split`，writeback 不会把它们错误降级成整个组件标签。
 
 布尔字段支持：
 
@@ -495,11 +498,11 @@ on / off
 示例：
 
 ```csv
-actor_name,component_name,mesh_name,mesh_path,material_name,material_path,material_slot,instance_index,semantic_class,render_main_pass,render_custom_depth,stencil
-Road_01,StaticMeshComponent,,,,,,road,true,true,2
-LeafTrash_03,StaticMeshComponent,,,,,,ignore,true,false,
-WaterPlane,StaticMeshComponent,,,,,,water,true,true,1
-DebugProxy,StaticMeshComponent,,,,,,water,false,true,1
+target_type,actor_name,component_name,mesh_name,mesh_path,material_name,material_path,material_slot,instance_index,semantic_class,render_main_pass,render_custom_depth,stencil
+component,Road_01,StaticMeshComponent,,,,,,,road,true,true,2
+component,LeafTrash_03,StaticMeshComponent,,,,,,,ignore,true,false,
+component,WaterPlane,StaticMeshComponent,,,,,,,water,true,true,1
+proxy,DebugProxy,StaticMeshComponent,,,,,,,water,false,true,1
 ```
 
 ---
@@ -629,6 +632,7 @@ output/semantic_map_validation.csv
 - mesh 过滤是否匹配；
 - material 过滤是否匹配；
 - instance_index 是否合法；
+- `target_type` 是否能由当前 UE backend 精确执行；
 - `render_main_pass` 是否非法或缺失；
 - `render_custom_depth` 是否非法或缺失；
 - stencil 是否缺失；

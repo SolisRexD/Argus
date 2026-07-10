@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 import unreal
 
+from argus_backends.ue import default_annotation_capabilities
+from argus_core.model import AnnotationRule, RenderPolicy
+from argus_core.planning import choose_strategy
 from common import log, parse_int, warn
 
 
@@ -18,6 +21,8 @@ from common import log, parse_int, warn
 class SemanticRowContext:
     """规范化的语义规则上下文，用于验证和回写"""
 
+    annotation_rule: object
+    strategy_decision: object
     actor_name: str
     component_name: str
     mesh_name: str
@@ -36,73 +41,67 @@ class SemanticRowContext:
     ignore_stencil: int
     dry_run: bool = False
 
+    def match_rule(self):
+        """Return normalized target fields consumed by the UE scene resolver."""
+        target = self.annotation_rule.target
+        return {
+            "actor_name": target.actor_name,
+            "component_name": target.component_name,
+            "mesh_name": target.mesh_name,
+            "mesh_path": target.mesh_path,
+            "material_name": target.material_name,
+            "material_path": target.material_path,
+            "material_slot": target.material_slot,
+            "instance_index": target.instance_index,
+            "proxy_id": target.proxy_id,
+        }
+
 
 class SemanticRuleBuilder:
     """将 CSV 行转换为可执行的渲染开关上下文"""
 
-    def __init__(self, sem_cfg, ignore_stencil):
+    def __init__(self, sem_cfg, ignore_stencil, capabilities=None):
         self.sem_cfg = sem_cfg
         self.ignore_stencil = int(ignore_stencil)
-
-    def _parse_switch(self, rule, key):
-        """
-        解析渲染开关值为布尔型。
-
-        支持：
-        - true:  1, true, yes, y, on
-        - false: 0, false, no, n, off
-
-        返回：
-        - parsed_bool
-        - raw_string
-        - invalid_flag
-        """
-        raw = str(rule.get(key, "")).strip().lower()
-
-        if raw in {"1", "true", "yes", "y", "on"}:
-            return True, raw, False
-
-        if raw in {"0", "false", "no", "n", "off"}:
-            return False, raw, False
-
-        return False, raw, True
+        self.capabilities = capabilities or default_annotation_capabilities()
 
     def build_context(self, rule):
-        """构建上下文并填充计算的模板值默认值"""
-        render_main_pass, main_raw, main_invalid = self._parse_switch(rule, "render_main_pass")
-        render_custom_depth, depth_raw, depth_invalid = self._parse_switch(rule, "render_custom_depth")
-
-        semantic_class = str(rule.get("semantic_class", "")).strip()
-        semantic_class_lower = semantic_class.lower()
-
-        stencil = parse_int(rule.get("stencil"), default=None)
+        """Adapt one legacy CSV row into core and UE execution models."""
         unknown_stencil = parse_int(self.sem_cfg.get("unknown_stencil"), default=250)
-
-        # 只有进入 mask 的组件才需要有效 stencil。
-        # 如果没有写 stencil，就回退 unknown_stencil。
-        if render_custom_depth and stencil is None:
-            stencil = unknown_stencil
-
-        # ignore 类如果进入 mask，强制使用 ignore_stencil。
-        if semantic_class_lower == "ignore" and render_custom_depth:
-            stencil = self.ignore_stencil
+        annotation_rule = AnnotationRule.from_legacy_row(
+            rule,
+            unknown_stencil=unknown_stencil,
+            ignore_stencil=self.ignore_stencil,
+        )
+        strategy_decision = choose_strategy(annotation_rule, self.capabilities)
+        render_main_pass = annotation_rule.render_policy in {
+            RenderPolicy.VISIBLE_LABELED,
+            RenderPolicy.VISIBLE_UNLABELED,
+        }
+        render_custom_depth = annotation_rule.render_policy in {
+            RenderPolicy.VISIBLE_LABELED,
+            RenderPolicy.HIDDEN_LABELED,
+        }
+        target = annotation_rule.target
 
         return SemanticRowContext(
-            actor_name=str(rule.get("actor_name", "")).strip(),
-            component_name=str(rule.get("component_name", "")).strip(),
-            mesh_name=str(rule.get("mesh_name", "")).strip(),
-            mesh_path=str(rule.get("mesh_path", "")).strip(),
-            material_name=str(rule.get("material_name", "")).strip(),
-            material_path=str(rule.get("material_path", "")).strip(),
-            material_slot=str(rule.get("material_slot", "")).strip(),
-            instance_index=parse_int(rule.get("instance_index"), default=None),
-            semantic_class=semantic_class,
+            annotation_rule=annotation_rule,
+            strategy_decision=strategy_decision,
+            actor_name=target.actor_name,
+            component_name=target.component_name,
+            mesh_name=target.mesh_name,
+            mesh_path=target.mesh_path,
+            material_name=target.material_name,
+            material_path=target.material_path,
+            material_slot=target.material_slot,
+            instance_index=target.instance_index,
+            semantic_class=annotation_rule.semantic_class,
             render_main_pass=render_main_pass,
             render_custom_depth=render_custom_depth,
             render_main_pass_raw=str(rule.get("render_main_pass", "")).strip(),
             render_custom_depth_raw=str(rule.get("render_custom_depth", "")).strip(),
-            invalid_render_switches=bool(main_invalid or depth_invalid),
-            stencil=stencil,
+            invalid_render_switches=annotation_rule.invalid_render_switches,
+            stencil=annotation_rule.effective_stencil,
             ignore_stencil=self.ignore_stencil,
         )
 
@@ -307,7 +306,10 @@ class AnnotationController:
             row = rule_builder.build_context(rule)
             row.dry_run = bool(dry_run)
 
-            descriptor, resolve_status = scene_catalog.resolve_component_descriptor(component_index, rule)
+            descriptor, resolve_status = scene_catalog.resolve_component_descriptor(
+                component_index,
+                row.match_rule(),
+            )
             component = descriptor.get("component_ref") if descriptor else None
 
             status = ""
@@ -347,6 +349,11 @@ class AnnotationController:
                         "; ".join(filters),
                     )
 
+                warn("{} -> {}".format(prefix, detail))
+
+            elif row.render_custom_depth and not row.strategy_decision.executable:
+                status = row.strategy_decision.kind.value
+                detail = row.strategy_decision.reason
                 warn("{} -> {}".format(prefix, detail))
 
             elif not self.supports_stencil(component):
@@ -410,6 +417,11 @@ class AnnotationController:
                     "material_slot": row.material_slot,
                     "instance_index": "" if row.instance_index is None else int(row.instance_index),
                     "stencil": "" if row.stencil is None else int(row.stencil),
+                    "target_type": row.annotation_rule.target.target_type.value,
+                    "backend": row.strategy_decision.backend,
+                    "strategy": row.strategy_decision.kind.value,
+                    "strategy_executable": row.strategy_decision.executable,
+                    "strategy_reason": row.strategy_decision.reason,
                     "status": status,
                     "detail": detail,
                 }
