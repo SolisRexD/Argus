@@ -772,6 +772,144 @@ class DualCaptureSetupService(BaseCaptureService):
         return rgb_actor, mask_actor
 
 
+class CaptureJob:
+    """Advance one capture between UE editor ticks."""
+
+    def __init__(
+        self,
+        capture_id,
+        runtime_plan,
+        is_streaming_completed,
+        prepare_semantics,
+        capture,
+        cleanup,
+        clock=None,
+    ):
+        self.capture_id = capture_id
+        self.runtime_plan = runtime_plan
+        self.done = False
+        self.result = None
+        self.error = None
+        self._is_streaming_completed = is_streaming_completed
+        self._prepare_semantics = prepare_semantics
+        self._capture = capture
+        self._cleanup = cleanup
+        self._clock = clock or time.monotonic
+        self._callbacks = []
+        self._tick_handle = None
+        self._started_at = None
+        self._warmup_started_at = None
+        self._stable_streaming_ticks = 0
+        self._semantic_stats = None
+        self._state = "waiting"
+
+    def start(self):
+        self._started_at = self._clock()
+
+        try:
+            self._tick_handle = unreal.register_slate_post_tick_callback(self._on_tick)
+        except Exception as exc:
+            self._finish(error=exc)
+
+        return self
+
+    def add_done_callback(self, callback):
+        if self.done:
+            self._notify(callback)
+        else:
+            self._callbacks.append(callback)
+
+        return self
+
+    def _on_tick(self, _delta_seconds):
+        if self.done:
+            return
+
+        try:
+            now = self._clock()
+            timeout = max(0.0, float(self.runtime_plan.streaming_timeout_seconds))
+
+            if timeout and now - self._started_at > timeout:
+                raise TimeoutError(
+                    "Capture '{}' timed out after {:.1f}s waiting for streaming".format(
+                        self.capture_id,
+                        timeout,
+                    )
+                )
+
+            if self._state == "waiting":
+                self._tick_waiting(now)
+            elif self._state == "warming":
+                self._tick_warming(now)
+            elif self._state == "capturing":
+                self._finish(result=self._capture(self._semantic_stats))
+        except Exception as exc:
+            self._finish(error=exc)
+
+    def _must_wait_for_streaming(self):
+        return bool(self.runtime_plan.enabled and self.runtime_plan.wait_for_streaming)
+
+    def _tick_waiting(self, now):
+        if not self._must_wait_for_streaming():
+            self._state = "warming"
+            self._warmup_started_at = now
+            return
+
+        if self._is_streaming_completed():
+            self._stable_streaming_ticks += 1
+        else:
+            self._stable_streaming_ticks = 0
+
+        if self._stable_streaming_ticks >= 2:
+            self._state = "warming"
+            self._warmup_started_at = now
+
+    def _tick_warming(self, now):
+        if self._must_wait_for_streaming() and not self._is_streaming_completed():
+            self._state = "waiting"
+            self._stable_streaming_ticks = 0
+            self._warmup_started_at = None
+            return
+
+        if now - self._warmup_started_at < max(
+            0.0,
+            float(self.runtime_plan.warmup_seconds),
+        ):
+            return
+
+        self._semantic_stats = self._prepare_semantics()
+        self._state = "capturing"
+
+    def _finish(self, result=None, error=None):
+        if self.done:
+            return
+
+        if self._tick_handle is not None:
+            unreal.unregister_slate_post_tick_callback(self._tick_handle)
+            self._tick_handle = None
+
+        try:
+            self._cleanup()
+        except Exception as cleanup_error:
+            if error is None:
+                error = cleanup_error
+
+        self.result = result if error is None else None
+        self.error = error
+        self.done = True
+        callbacks = self._callbacks
+        self._callbacks = []
+
+        for callback in callbacks:
+            self._notify(callback)
+
+    def _notify(self, callback):
+        try:
+            callback(self)
+        except Exception as exc:
+            warn("Capture completion callback failed: {}".format(exc))
+
+
 class CaptureService(BaseCaptureService):
     """
     单帧多路采集服务。
