@@ -894,6 +894,7 @@ class CaptureJob:
             if error is None:
                 error = cleanup_error
 
+        error = error.with_traceback(None) if error is not None else None
         self.result = result if error is None else None
         self.error = error
         self.done = True

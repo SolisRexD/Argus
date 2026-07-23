@@ -1,6 +1,8 @@
+import gc
 import importlib
 import sys
 import types
+import weakref
 
 from argus_core.capture import RuntimePlaySessionPlan, RuntimePreparationPlan
 
@@ -178,6 +180,38 @@ def test_job_timeout_and_capture_error_both_cleanup(monkeypatch):
     assert str(error_job.error) == "capture failed"
     assert cleanup_events == ["timeout", "error"]
     assert unreal_api.unregister_count == 2
+
+
+def test_timeout_error_does_not_keep_finished_job_alive(monkeypatch):
+    module, unreal_api = import_capture_system(monkeypatch)
+    clock = FakeClock()
+    job = module.CaptureJob(
+        capture_id="timeout-lifetime",
+        runtime_plan=RuntimePreparationPlan(
+            enabled=True,
+            wait_for_streaming=True,
+            streaming_timeout_seconds=1.0,
+        ),
+        is_streaming_completed=lambda: False,
+        prepare_semantics=lambda: {},
+        capture=lambda stats: {},
+        cleanup=lambda: None,
+        clock=clock,
+    ).start()
+    job_ref = weakref.ref(job)
+
+    clock.advance(2.0)
+    unreal_api.tick()
+    error = job.error
+
+    gc.disable()
+    try:
+        job = None
+        assert job_ref() is None
+    finally:
+        gc.enable()
+
+    assert isinstance(error, TimeoutError)
 
 
 def test_capture_service_applies_semantics_only_after_streaming(monkeypatch, tmp_path):
