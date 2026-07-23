@@ -185,41 +185,23 @@ def capture_once(config_path=None, capture_id=None, pose=None):
 
     expected_streams = expected_stream_names(cfg)
 
-    capture_service = CaptureService()
-    row = capture_service.capture_once(
+    def finalize(row):
+        file_map = validate_capture_outputs(row, expected_streams)
+        metadata_csv = resolve_path(output_cfg["metadata_csv"])
+        DataPipelineService().append_capture_metadata(metadata_csv, row)
+        log("采集完成: {}".format(row["capture_id"]))
+
+        for stream_name in expected_streams:
+            log("{}: {}".format(stream_name.upper(), file_map.get(stream_name, "")))
+
+        return row
+
+    return CaptureService().capture_once(
         cfg,
         capture_id=capture_id,
         pose=pose,
+        finalize=finalize,
     )
-
-    file_map = validate_capture_outputs(
-        row,
-        expected_streams,
-    )
-
-    metadata_csv = resolve_path(output_cfg["metadata_csv"])
-
-    pipeline = DataPipelineService()
-    pipeline.append_capture_metadata(metadata_csv, row)
-
-    log("采集完成: {}".format(row["capture_id"]))
-
-    for stream_name in expected_streams:
-        log("{}: {}".format(stream_name.upper(), file_map.get(stream_name, "")))
-
-    result = {
-        "capture_id": row["capture_id"],
-        "files": file_map,
-    }
-
-    # 兼容旧版调用者。
-    if "rgb" in file_map:
-        result["rgb_file"] = file_map["rgb"]
-
-    if "mask" in file_map:
-        result["mask_file"] = file_map["mask"]
-
-    return result
 
 
 if __name__ == "__main__":

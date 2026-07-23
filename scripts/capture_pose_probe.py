@@ -72,9 +72,30 @@ def main(config_path=None):
 
     from capture_rgb_and_mask import capture_once
 
-    result = capture_once(capture_id=capture_id, pose=cfg["pose"])
-    print("ARGUS_PROBE_RESULT={}".format(json.dumps(result, ensure_ascii=False)))
-    return result
+    job = capture_once(capture_id=capture_id, pose=cfg["pose"])
+
+    def print_result(finished_job):
+        if finished_job.error is not None:
+            print("ARGUS_PROBE_ERROR={}".format(finished_job.error))
+            return
+
+        row = finished_job.result
+        files = json.loads(row.get("files_json", "{}"))
+        result = {
+            "capture_id": row["capture_id"],
+            "files": files,
+        }
+
+        if "rgb" in files:
+            result["rgb_file"] = files["rgb"]
+
+        if "mask" in files:
+            result["mask_file"] = files["mask"]
+
+        print("ARGUS_PROBE_RESULT={}".format(json.dumps(result, ensure_ascii=False)))
+
+    job.add_done_callback(print_result)
+    return job
 
 
 if __name__ == "__main__":

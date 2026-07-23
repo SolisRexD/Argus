@@ -414,6 +414,91 @@ def _log_plan_summary(stats, expected_streams, incomplete_count, cleaned_count):
     log("================================")
 
 
+class BatchCaptureRunner:
+    """Run capture jobs one at a time without blocking UE Tick."""
+
+    def __init__(
+        self,
+        capture_service,
+        cfg,
+        items,
+        finalize_row,
+        continue_on_error,
+        on_error=None,
+        on_done=None,
+    ):
+        self.capture_service = capture_service
+        self.cfg = cfg
+        self.items = iter(items)
+        self.finalize_row = finalize_row
+        self.continue_on_error = bool(continue_on_error)
+        self.on_error = on_error
+        self.on_done = on_done
+        self.done = False
+        self.error = None
+        self.success_count = 0
+        self.failed_count = 0
+
+    def start(self):
+        self._start_next()
+        return self
+
+    def _start_next(self):
+        try:
+            item = next(self.items)
+        except StopIteration:
+            self._finish()
+            return
+
+        try:
+            job = self.capture_service.capture_once(
+                self.cfg,
+                capture_id=item["capture_id"],
+                pose=item["pose"],
+                finalize=lambda row: self.finalize_row(item, row),
+            )
+        except Exception as exc:
+            self._fail(item, exc)
+            return
+
+        job.add_done_callback(
+            lambda finished_job, current_item=item: self._job_done(
+                current_item,
+                finished_job,
+            )
+        )
+
+    def _job_done(self, item, job):
+        if job.error is not None:
+            self._fail(item, job.error)
+            return
+
+        self.success_count += 1
+        self._start_next()
+
+    def _fail(self, item, error):
+        self.failed_count += 1
+
+        if self.on_error:
+            self.on_error(item, error)
+
+        if self.continue_on_error:
+            self._start_next()
+            return
+
+        self.error = error
+        self._finish()
+
+    def _finish(self):
+        if self.done:
+            return
+
+        self.done = True
+
+        if self.on_done:
+            self.on_done(self)
+
+
 def run_batch(config_path=None):
     """
     批量采集入口函数。
@@ -515,13 +600,11 @@ def run_batch(config_path=None):
 
     capture_service = CaptureService()
 
-    ok = 0
-    failed = 0
     skipped_existing = 0
     skipped_duplicate_pose = 0
+    capture_items = []
 
     for item in plan:
-        pose = item["pose"]
         capture_id = item["capture_id"]
         action = item["action"]
 
@@ -535,38 +618,38 @@ def run_batch(config_path=None):
             log("跳过已完成 capture_id: {}".format(capture_id))
             continue
 
-        try:
-            row = capture_service.capture_once(
-                cfg,
-                capture_id=capture_id,
-                pose=pose,
-            )
+        capture_items.append(item)
 
-            _validate_capture_row_outputs(row, expected_streams)
+    def finalize_row(item, row):
+        _validate_capture_row_outputs(row, expected_streams)
+        pipeline.append_capture_metadata(metadata_csv, row)
+        completed_capture_ids.add(item["capture_id"])
+        log("采集成功: {}".format(item["capture_id"]))
+        return row
 
-            pipeline.append_capture_metadata(metadata_csv, row)
+    def on_error(item, error):
+        capture_id = item["capture_id"]
+        log("批量采集失败: capture_id={}, error={}".format(capture_id, error))
+        log("".join(traceback.format_exception(type(error), error, error.__traceback__)))
 
-            completed_capture_ids.add(capture_id)
+    def on_done(runner):
+        log("========== Batch Done ==========")
+        log("success: {}".format(runner.success_count))
+        log("failed: {}".format(runner.failed_count))
+        log("skipped_existing: {}".format(skipped_existing))
+        log("skipped_duplicate_pose: {}".format(skipped_duplicate_pose))
+        log("metadata_cleaned: {}".format(cleaned_count))
+        log("================================")
 
-            ok += 1
-            log("采集成功: {}".format(capture_id))
-
-        except Exception as e:
-            failed += 1
-
-            log("批量采集失败: capture_id={}, error={}".format(capture_id, e))
-            log(traceback.format_exc())
-
-            if not continue_on_error:
-                raise
-
-    log("========== Batch Done ==========")
-    log("success: {}".format(ok))
-    log("failed: {}".format(failed))
-    log("skipped_existing: {}".format(skipped_existing))
-    log("skipped_duplicate_pose: {}".format(skipped_duplicate_pose))
-    log("metadata_cleaned: {}".format(cleaned_count))
-    log("================================")
+    return BatchCaptureRunner(
+        capture_service=capture_service,
+        cfg=cfg,
+        items=capture_items,
+        finalize_row=finalize_row,
+        continue_on_error=continue_on_error,
+        on_error=on_error,
+        on_done=on_done,
+    ).start()
 
 
 if __name__ == "__main__":
