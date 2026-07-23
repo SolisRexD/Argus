@@ -1,7 +1,5 @@
 """UE runtime preparation helpers for streamed-world capture."""
 
-import time
-
 import unreal
 
 from argus_core.capture import build_runtime_preparation_plan
@@ -11,8 +9,7 @@ from common import log, make_rotator, warn
 class RuntimeCaptureController:
     """Execute runtime capture preparation plans inside Unreal Editor."""
 
-    def __init__(self, sleep_fn=None):
-        self._sleep = sleep_fn or time.sleep
+    def __init__(self):
         self._player_restore_state = None
 
     def prepare_for_capture(self, cfg, pose=None, capture_actor=None):
@@ -51,12 +48,6 @@ class RuntimeCaptureController:
 
         if plan.wait_for_streaming:
             self._flush_level_streaming(world)
-
-        if plan.warmup_seconds > 0:
-            self._sleep(plan.warmup_seconds)
-
-        if plan.pause_after_warmup:
-            self.set_game_paused(True, world=world)
 
         return plan
 
@@ -116,6 +107,28 @@ class RuntimeCaptureController:
         except Exception as exc:
             warn("Unable to set game pause state to {}: {}".format(bool(paused), exc))
             return False
+
+    def is_streaming_completed(self, world=None):
+        """Return whether the current world's World Partition work is complete."""
+        world = world or self._get_world()
+
+        if not world:
+            raise RuntimeError(
+                "Unable to query World Partition streaming; no UE world is available"
+            )
+
+        subsystem = unreal.SubsystemBlueprintLibrary.get_world_subsystem(
+            world,
+            unreal.WorldPartitionSubsystem,
+        )
+
+        if not subsystem:
+            raise RuntimeError(
+                "Unable to query World Partition streaming; "
+                "no World Partition subsystem is available"
+            )
+
+        return bool(subsystem.is_all_streaming_completed())
 
     def _execute_console_command(self, world, command):
         try:
