@@ -827,15 +827,6 @@ class CaptureJob:
 
         try:
             now = self._clock()
-            timeout = max(0.0, float(self.runtime_plan.streaming_timeout_seconds))
-
-            if timeout and now - self._started_at > timeout:
-                raise TimeoutError(
-                    "Capture '{}' timed out after {:.1f}s waiting for streaming".format(
-                        self.capture_id,
-                        timeout,
-                    )
-                )
 
             if self._state == "waiting":
                 self._tick_waiting(now)
@@ -854,6 +845,16 @@ class CaptureJob:
             self._state = "warming"
             self._warmup_started_at = now
             return
+
+        timeout = max(0.0, float(self.runtime_plan.streaming_timeout_seconds))
+
+        if timeout and now - self._started_at > timeout:
+            raise TimeoutError(
+                "Capture '{}' timed out after {:.1f}s waiting for streaming".format(
+                    self.capture_id,
+                    timeout,
+                )
+            )
 
         if self._is_streaming_completed():
             self._stable_streaming_ticks += 1

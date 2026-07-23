@@ -104,6 +104,35 @@ def test_job_waits_for_two_streaming_ticks_then_warmup_and_capture(monkeypatch):
     assert unreal_api.unregister_count == 1
 
 
+def test_streaming_timeout_does_not_expire_after_semantics_are_prepared(monkeypatch):
+    module, unreal_api = import_capture_system(monkeypatch)
+    clock = FakeClock()
+    job = module.CaptureJob(
+        capture_id="slow-semantics",
+        runtime_plan=RuntimePreparationPlan(
+            enabled=True,
+            wait_for_streaming=True,
+            streaming_timeout_seconds=1.0,
+        ),
+        is_streaming_completed=lambda: True,
+        prepare_semantics=lambda: clock.advance(2.0) or {"scanned": 1},
+        capture=lambda stats: {"capture_id": "slow-semantics", "stats": stats},
+        cleanup=lambda: None,
+        clock=clock,
+    ).start()
+
+    unreal_api.tick()
+    unreal_api.tick()
+    unreal_api.tick()
+    unreal_api.tick()
+
+    assert job.error is None
+    assert job.result == {
+        "capture_id": "slow-semantics",
+        "stats": {"scanned": 1},
+    }
+
+
 def test_job_resets_warmup_when_streaming_regresses(monkeypatch):
     module, unreal_api = import_capture_system(monkeypatch)
     clock = FakeClock()
