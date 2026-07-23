@@ -532,16 +532,7 @@ class BaseCaptureService:
 
     def _set_post_process_material(self, scene_capture_comp, material):
         """Set one full-weight post-process material on a capture component."""
-        settings = scene_capture_comp.get_editor_property("post_process_settings")
-        weighted = settings.get_editor_property("weighted_blendables")
-
-        blendable = unreal.WeightedBlendable()
-        blendable.object = material
-        blendable.weight = 1.0
-        weighted.array = [blendable]
-
-        settings.set_editor_property("weighted_blendables", weighted)
-        scene_capture_comp.set_editor_property("post_process_settings", settings)
+        scene_capture_comp.add_or_update_blendable(material, 1.0)
 
     def _configure_stream_post_process(self, component, stream, assets, material_cache):
         """Apply the configured post-process state for one capture stream."""

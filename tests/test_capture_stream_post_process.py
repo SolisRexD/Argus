@@ -25,6 +25,7 @@ class FakeComponent:
     def __init__(self):
         self.post_process_settings = FakePostProcessSettings()
         self.post_process_blend_weight = None
+        self.added_blendables = []
 
     def get_editor_property(self, name):
         return getattr(self, name)
@@ -32,15 +33,12 @@ class FakeComponent:
     def set_editor_property(self, name, value):
         setattr(self, name, value)
 
-
-class FakeWeightedBlendable:
-    def __init__(self):
-        self.object = None
-        self.weight = 0.0
+    def add_or_update_blendable(self, material, weight):
+        self.added_blendables.append((material, weight))
 
 
 def import_capture_system(monkeypatch):
-    fake_unreal = types.SimpleNamespace(WeightedBlendable=FakeWeightedBlendable)
+    fake_unreal = types.SimpleNamespace()
     monkeypatch.syspath_prepend("scripts")
     monkeypatch.setitem(sys.modules, "unreal", fake_unreal)
     for module_name in (
@@ -92,9 +90,8 @@ def test_capture_service_reapplies_stream_post_process_material(monkeypatch):
         "/Game/Tools/Semantic/M_PP_SemanticMask_Auto",
     ]
     assert component.post_process_blend_weight == 1.0
-    assert len(weighted.array) == 1
-    assert weighted.array[0].object is material
-    assert weighted.array[0].weight == 1.0
+    assert weighted.array == []
+    assert component.added_blendables == [(material, 1.0)]
 
 
 def test_setup_and_capture_share_base_post_process_implementation(monkeypatch):
