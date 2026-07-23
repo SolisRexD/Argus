@@ -4,9 +4,9 @@
 
 **Goal:** Make the first Argus capture in a fresh CitySample PIE session wait for World Partition, apply semantics after streaming, and export correct results without blocking UE Tick.
 
-**Architecture:** `CaptureService.capture_once()` prepares the scene synchronously, then returns a `CaptureJob` driven by UE 5.8 Slate post-tick callbacks. The job waits for stable World Partition completion, performs non-blocking warm-up, writes semantic stencils, captures on the following Tick, and always restores runtime state. Single-frame and batch entrypoints consume the same job API; batch execution remains strictly serial.
+**Architecture:** `CaptureService.capture_once()` prepares the scene synchronously, then returns a `CaptureJob` driven by UE 5.8 Slate post-tick callbacks. The player remains the active streaming source; an unregistered transient `WorldPartitionStreamingSourceComponent`, created with the capture actor as outer, supplies the location-specific `is_streaming_completed()` query. The job waits for stable completion, performs non-blocking warm-up, writes semantic stencils, captures on the following Tick, and always restores runtime state. Single-frame and batch entrypoints consume the same job API; batch execution remains strictly serial.
 
-**Tech Stack:** Python 3, Unreal Engine 5.8 Python API, Slate post-tick callbacks, World Partition subsystem, pytest.
+**Tech Stack:** Python 3, Unreal Engine 5.8 Python API, Slate post-tick callbacks, `WorldPartitionStreamingSourceComponent`, pytest.
 
 ---
 
@@ -14,13 +14,13 @@
 
 - `argus_core/capture/runtime.py`: backend-neutral runtime plan, including the streaming timeout.
 - `config/pipeline_config.json`: CitySample timeout calibration.
-- `scripts/argus_components/runtime_control.py`: immediate runtime preparation and World Partition readiness query.
+- `scripts/argus_components/runtime_control.py`: immediate runtime preparation and transient World Partition query-component creation.
 - `scripts/argus_components/capture_system.py`: `CaptureJob` and the asynchronous capture pipeline.
 - `scripts/capture_rgb_and_mask.py`: asynchronous single-capture finalizer.
 - `scripts/capture_pose_probe.py`: prints probe output after job completion.
 - `scripts/batch_capture.py`: serial asynchronous batch runner.
 - `tests/test_capture_runtime.py`: pure runtime-plan coverage.
-- `tests/test_runtime_capture_controller.py`: non-blocking controller and subsystem query coverage.
+- `tests/test_runtime_capture_controller.py`: non-blocking controller and query-component creation coverage.
 - `tests/test_capture_async_job.py`: state-machine ordering, timeout, and cleanup coverage.
 - `tests/test_async_batch_capture.py`: batch serialization coverage.
 - `tests/test_capture_stream_post_process.py`: existing native blendable regression coverage.
@@ -188,31 +188,26 @@ def test_prepare_for_capture_requests_streaming_without_sleeping_or_pausing(monk
     assert not any(event[0] == "paused" for event in events)
 
 
-def test_is_streaming_completed_uses_world_partition_subsystem(monkeypatch):
+def test_make_streaming_query_source_uses_capture_actor_as_outer(monkeypatch):
     module = import_runtime_control(monkeypatch)
-    world = object()
-    subsystem = types.SimpleNamespace(is_all_streaming_completed=lambda: True)
-    module.unreal.WorldPartitionSubsystem = object()
-    module.unreal.SubsystemBlueprintLibrary = types.SimpleNamespace(
-        get_world_subsystem=lambda context, cls: subsystem
-    )
+    actor = object()
+    source = object()
+    component_type = object()
+    calls = []
+    module.unreal.WorldPartitionStreamingSourceComponent = component_type
+    module.unreal.new_object = lambda cls, outer=None: calls.append((cls, outer)) or source
     controller = module.RuntimeCaptureController()
-    controller._get_world = lambda: world
 
-    assert controller.is_streaming_completed() is True
+    assert controller.make_streaming_query_source(actor) is source
+    assert calls == [(component_type, actor)]
 
 
-def test_is_streaming_completed_rejects_missing_subsystem(monkeypatch):
+def test_make_streaming_query_source_rejects_missing_actor(monkeypatch):
     module = import_runtime_control(monkeypatch)
-    module.unreal.WorldPartitionSubsystem = object()
-    module.unreal.SubsystemBlueprintLibrary = types.SimpleNamespace(
-        get_world_subsystem=lambda context, cls: None
-    )
     controller = module.RuntimeCaptureController()
-    controller._get_world = lambda: object()
 
-    with pytest.raises(RuntimeError, match="World Partition subsystem"):
-        controller.is_streaming_completed()
+    with pytest.raises(RuntimeError, match="capture actor"):
+        controller.make_streaming_query_source(None)
 ```
 
 Add `import pytest` at the top of the test file.
@@ -244,23 +239,26 @@ if plan.pause_after_warmup:
     self.set_game_paused(True, world=world)
 ```
 
-Add the readiness query after `set_game_paused()`:
+Add the transient readiness-query factory after `set_game_paused()`:
 
 ```python
-def is_streaming_completed(self, world=None):
-    """Return whether the current world's World Partition work is complete."""
-    world = world or self._get_world()
-    if not world:
-        raise RuntimeError("Unable to query World Partition streaming; no UE world is available")
+def make_streaming_query_source(self, capture_actor):
+    """Create a transient source that can query streaming at the capture actor."""
+    if not capture_actor:
+        raise RuntimeError(
+            "Unable to create World Partition streaming query; "
+            "no capture actor is available"
+        )
 
-    subsystem = unreal.SubsystemBlueprintLibrary.get_world_subsystem(
-        world,
-        unreal.WorldPartitionSubsystem,
+    source = unreal.new_object(
+        unreal.WorldPartitionStreamingSourceComponent,
+        outer=capture_actor,
     )
-    if not subsystem:
-        raise RuntimeError("Unable to query World Partition streaming; no World Partition subsystem is available")
 
-    return bool(subsystem.is_all_streaming_completed())
+    if not source:
+        raise RuntimeError("Unable to create World Partition streaming query source")
+
+    return source
 ```
 
 - [ ] **Step 4: Run focused tests**
@@ -692,6 +690,16 @@ runtime_plan = self.runtime_controller.prepare_for_capture(
     pose=pose,
     capture_actor=primary["actor"],
 )
+try:
+    streaming_query_source = (
+        self.runtime_controller.make_streaming_query_source(primary["actor"])
+        if runtime_plan.enabled and runtime_plan.wait_for_streaming
+        else None
+    )
+except Exception:
+    self.runtime_controller.finish_after_capture(runtime_plan)
+    raise
+
 cid = capture_id or "{}_{}".format(
     output_cfg.get("file_prefix", "cap"),
     now_stamp(),
@@ -720,7 +728,11 @@ def capture_ready(semantic_stats):
 return CaptureJob(
     capture_id=cid,
     runtime_plan=runtime_plan,
-    is_streaming_completed=self.runtime_controller.is_streaming_completed,
+    is_streaming_completed=(
+        streaming_query_source.is_streaming_completed
+        if streaming_query_source
+        else (lambda: True)
+    ),
     prepare_semantics=prepare_semantics,
     capture=capture_ready,
     cleanup=lambda: self.runtime_controller.finish_after_capture(runtime_plan),
@@ -1005,3 +1017,19 @@ git log -8 --oneline --decorate
 ```
 
 Expected: only `AGENTS.md` remains untracked unless an acceptance defect required an additional committed fix.
+
+### Task 8: Limit the streaming timeout to streaming wait
+
+CitySample acceptance exposed a state-machine defect: Freeway finished a 76,813-component semantic scan just after the job had been alive for 120 seconds, then the next Tick raised the streaming timeout before capture. The timeout check was global to every Job state even though the setting and error message both describe streaming wait.
+
+- Add `test_streaming_timeout_does_not_expire_after_semantics_are_prepared()` to advance the fake clock during semantic preparation and prove the old code fails before capture.
+- Move the timeout check from `_on_tick()` into `_tick_waiting()`.
+- Retain the original timeout behavior when World Partition never completes.
+
+### UE 5.8 acceptance record
+
+- Harbor: 15 taxonomy colors, 0 invalid pixels, 0.737076% unknown, 29,964 scanned components, 0 failed writebacks.
+- Dense core: 13 taxonomy colors, 0 invalid pixels, 0.408324% unknown, 61,656 scanned components, 0 failed writebacks.
+- Freeway: 16 taxonomy colors, 0 invalid pixels, 2.746094% unknown, 77,239 scanned components, 0 failed writebacks. The earlier synchronous baseline was 11.709346% unknown.
+- Street oblique: 13 taxonomy colors, 0 invalid pixels, 2.273534% unknown, 71,972 scanned components, 0 failed writebacks. Its earlier baseline was 2.122251%; 98.462% of unknown pixels remain in the top image quarter, consistent with sky/distant unmatched content rather than unloaded foreground cells.
+- The two-item runner started Street only after the failed Freeway Job cleaned up. After the timeout-scope fix, Freeway succeeded with the unchanged 120-second configuration; both capture IDs have one complete metadata row and both RGB/mask output sets exist.
