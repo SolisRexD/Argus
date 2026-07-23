@@ -949,7 +949,84 @@ class CaptureService(BaseCaptureService):
             True,
         )
 
-    def capture_once(self, cfg, capture_id=None, pose=None):
+    def _capture_and_export(
+        self,
+        states,
+        primary_stream,
+        primary,
+        intrinsics,
+        play_session_plan,
+        runtime_plan,
+        semantic_stencil_stats,
+        output_cfg,
+        out_dir,
+        capture_id,
+        finalize,
+    ):
+        for state in states.values():
+            self._capture_twice(state["component"])
+
+        files = {}
+
+        for name, state in states.items():
+            stream = state["stream"]
+            ext = self._choose_ext_by_rt(state["rt"])
+            suffix = stream.file_suffix or name
+            abs_path = os.path.join(
+                out_dir,
+                "{}_{}{}".format(capture_id, suffix, ext),
+            )
+
+            self._export_rt(state["rt"], abs_path)
+
+            if stream.force_png_opaque:
+                self._make_png_opaque(abs_path)
+
+            files[name] = abs_path
+
+        primary_loc = primary["actor"].get_actor_location()
+        primary_rot = primary["actor"].get_actor_rotation()
+        intrinsics_meta = self.intrinsics_manager.intrinsics_to_metadata(
+            primary["component"],
+            intrinsics,
+        )
+        row = {
+            "capture_id": capture_id,
+            "x": primary_loc.x,
+            "y": primary_loc.y,
+            "z": primary_loc.z,
+            "pitch": primary_rot.pitch,
+            "yaw": primary_rot.yaw,
+            "roll": primary_rot.roll,
+            "files_json": json.dumps(files, ensure_ascii=False),
+            "primary_stream": primary_stream.name,
+            "runtime_play_session_plan_json": json.dumps(
+                play_session_plan.to_metadata(),
+                ensure_ascii=False,
+            ),
+            "runtime_plan_json": json.dumps(
+                runtime_plan.to_metadata(),
+                ensure_ascii=False,
+            ),
+            "semantic_stencil_json": json.dumps(
+                semantic_stencil_stats,
+                ensure_ascii=False,
+            ),
+            **intrinsics_meta,
+        }
+
+        if "rgb" in files:
+            row["rgb_file"] = files["rgb"]
+
+        if "mask" in files:
+            row["mask_file"] = files["mask"]
+
+        for name, path in files.items():
+            row["{}_file".format(name)] = path
+
+        return finalize(row) if finalize else row
+
+    def capture_once(self, cfg, capture_id=None, pose=None, finalize=None):
         """
         执行一次多路同步采集，并返回 metadata 字典。
 
@@ -1065,87 +1142,42 @@ class CaptureService(BaseCaptureService):
                     intrinsics,
                 )
 
-        # 采集前等待一小段时间，让位姿、渲染状态或后处理状态稳定。
         runtime_plan = self.runtime_controller.prepare_for_capture(
             cfg,
             pose=pose,
             capture_actor=primary["actor"],
         )
-        semantic_stencil_stats = self.semantic_stencil_controller.apply(cfg, pose=pose)
-
-        try:
-            time.sleep(max(0.0, float(cfg.get("batch", {}).get("sleep_seconds", 0.0))))
-
-        # 所有 stream 都采集两次，减少首帧不稳定问题。
-            for state in states.values():
-                self._capture_twice(state["component"])
-        finally:
-            self.runtime_controller.finish_after_capture(runtime_plan)
-
         cid = capture_id or "{}_{}".format(
             output_cfg.get("file_prefix", "cap"),
             now_stamp(),
         )
 
-        files = {}
+        def prepare_semantics():
+            if runtime_plan.pause_after_warmup:
+                self.runtime_controller.set_game_paused(True)
 
-        for name, state in states.items():
-            stream = state["stream"]
-            ext = self._choose_ext_by_rt(state["rt"])
-            suffix = stream.file_suffix or name
+            return self.semantic_stencil_controller.apply(cfg, pose=pose)
 
-            abs_path = os.path.join(
+        def capture_ready(semantic_stencil_stats):
+            return self._capture_and_export(
+                states,
+                primary_stream,
+                primary,
+                intrinsics,
+                play_session_plan,
+                runtime_plan,
+                semantic_stencil_stats,
+                output_cfg,
                 out_dir,
-                "{}_{}{}".format(cid, suffix, ext),
+                cid,
+                finalize,
             )
 
-            self._export_rt(state["rt"], abs_path)
-
-            if stream.force_png_opaque:
-                self._make_png_opaque(abs_path)
-
-            files[name] = abs_path
-
-        primary_loc = primary["actor"].get_actor_location()
-        primary_rot = primary["actor"].get_actor_rotation()
-
-        intrinsics_meta = self.intrinsics_manager.intrinsics_to_metadata(
-            primary["component"],
-            intrinsics,
-        )
-
-        row = {
-            "capture_id": cid,
-            "x": primary_loc.x,
-            "y": primary_loc.y,
-            "z": primary_loc.z,
-            "pitch": primary_rot.pitch,
-            "yaw": primary_rot.yaw,
-            "roll": primary_rot.roll,
-            "files_json": json.dumps(files, ensure_ascii=False),
-            "primary_stream": primary_stream.name,
-            "runtime_play_session_plan_json": json.dumps(
-                play_session_plan.to_metadata(),
-                ensure_ascii=False,
-            ),
-            "runtime_plan_json": json.dumps(runtime_plan.to_metadata(), ensure_ascii=False),
-            "semantic_stencil_json": json.dumps(semantic_stencil_stats, ensure_ascii=False),
-            **intrinsics_meta,
-        }
-
-        # 兼容旧版字段。
-        if "rgb" in files:
-            row["rgb_file"] = files["rgb"]
-
-        if "mask" in files:
-            row["mask_file"] = files["mask"]
-
-        # 为任意 stream 添加 xxx_file 便捷字段。
-        # 例如：
-        # - depth_file
-        # - normal_file
-        # - debug_file
-        for name, path in files.items():
-            row["{}_file".format(name)] = path
-
-        return row
+        return CaptureJob(
+            capture_id=cid,
+            runtime_plan=runtime_plan,
+            is_streaming_completed=self.runtime_controller.is_streaming_completed,
+            prepare_semantics=prepare_semantics,
+            capture=capture_ready,
+            cleanup=lambda: self.runtime_controller.finish_after_capture(runtime_plan),
+        ).start()
