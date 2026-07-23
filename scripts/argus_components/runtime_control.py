@@ -108,27 +108,23 @@ class RuntimeCaptureController:
             warn("Unable to set game pause state to {}: {}".format(bool(paused), exc))
             return False
 
-    def is_streaming_completed(self, world=None):
-        """Return whether the current world's World Partition work is complete."""
-        world = world or self._get_world()
-
-        if not world:
+    def make_streaming_query_source(self, capture_actor):
+        """Create a transient source that can query streaming at the capture actor."""
+        if not capture_actor:
             raise RuntimeError(
-                "Unable to query World Partition streaming; no UE world is available"
+                "Unable to create World Partition streaming query; "
+                "no capture actor is available"
             )
 
-        subsystem = unreal.SubsystemBlueprintLibrary.get_world_subsystem(
-            world,
-            unreal.WorldPartitionSubsystem,
+        source = unreal.new_object(
+            unreal.WorldPartitionStreamingSourceComponent,
+            outer=capture_actor,
         )
 
-        if not subsystem:
-            raise RuntimeError(
-                "Unable to query World Partition streaming; "
-                "no World Partition subsystem is available"
-            )
+        if not source:
+            raise RuntimeError("Unable to create World Partition streaming query source")
 
-        return bool(subsystem.is_all_streaming_completed())
+        return source
 
     def _execute_console_command(self, world, command):
         try:

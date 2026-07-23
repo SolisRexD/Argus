@@ -1147,6 +1147,17 @@ class CaptureService(BaseCaptureService):
             pose=pose,
             capture_actor=primary["actor"],
         )
+
+        try:
+            streaming_query_source = (
+                self.runtime_controller.make_streaming_query_source(primary["actor"])
+                if runtime_plan.enabled and runtime_plan.wait_for_streaming
+                else None
+            )
+        except Exception:
+            self.runtime_controller.finish_after_capture(runtime_plan)
+            raise
+
         cid = capture_id or "{}_{}".format(
             output_cfg.get("file_prefix", "cap"),
             now_stamp(),
@@ -1176,7 +1187,11 @@ class CaptureService(BaseCaptureService):
         return CaptureJob(
             capture_id=cid,
             runtime_plan=runtime_plan,
-            is_streaming_completed=self.runtime_controller.is_streaming_completed,
+            is_streaming_completed=(
+                streaming_query_source.is_streaming_completed
+                if streaming_query_source
+                else (lambda: True)
+            ),
             prepare_semantics=prepare_semantics,
             capture=capture_ready,
             cleanup=lambda: self.runtime_controller.finish_after_capture(runtime_plan),

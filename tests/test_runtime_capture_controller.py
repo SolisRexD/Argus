@@ -110,28 +110,23 @@ def test_prepare_for_capture_requests_streaming_without_sleeping_or_pausing(monk
     assert not any(event[0] in {"sleep", "paused"} for event in events)
 
 
-def test_is_streaming_completed_uses_world_partition_subsystem(monkeypatch):
+def test_make_streaming_query_source_uses_capture_actor_as_outer(monkeypatch):
     module = import_runtime_control(monkeypatch)
-    world = object()
-    subsystem = types.SimpleNamespace(is_all_streaming_completed=lambda: True)
-    module.unreal.WorldPartitionSubsystem = object()
-    module.unreal.SubsystemBlueprintLibrary = types.SimpleNamespace(
-        get_world_subsystem=lambda context, cls: subsystem
-    )
+    actor = object()
+    source = object()
+    component_type = object()
+    calls = []
+    module.unreal.WorldPartitionStreamingSourceComponent = component_type
+    module.unreal.new_object = lambda cls, outer=None: calls.append((cls, outer)) or source
     controller = module.RuntimeCaptureController()
-    controller._get_world = lambda: world
 
-    assert controller.is_streaming_completed() is True
+    assert controller.make_streaming_query_source(actor) is source
+    assert calls == [(component_type, actor)]
 
 
-def test_is_streaming_completed_rejects_missing_subsystem(monkeypatch):
+def test_make_streaming_query_source_rejects_missing_actor(monkeypatch):
     module = import_runtime_control(monkeypatch)
-    module.unreal.WorldPartitionSubsystem = object()
-    module.unreal.SubsystemBlueprintLibrary = types.SimpleNamespace(
-        get_world_subsystem=lambda context, cls: None
-    )
     controller = module.RuntimeCaptureController()
-    controller._get_world = lambda: object()
 
-    with pytest.raises(RuntimeError, match="World Partition subsystem"):
-        controller.is_streaming_completed()
+    with pytest.raises(RuntimeError, match="capture actor"):
+        controller.make_streaming_query_source(None)

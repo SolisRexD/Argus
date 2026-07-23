@@ -218,9 +218,12 @@ def test_capture_service_applies_semantics_only_after_streaming(monkeypatch, tmp
         wait_for_streaming=True,
         streaming_timeout_seconds=10.0,
     )
+    streaming_source = types.SimpleNamespace(
+        is_streaming_completed=lambda: next(readiness)
+    )
     runtime_controller = types.SimpleNamespace(
         prepare_for_capture=lambda cfg, pose, capture_actor: runtime_plan,
-        is_streaming_completed=lambda: next(readiness),
+        make_streaming_query_source=lambda capture_actor: streaming_source,
         set_game_paused=lambda paused: None,
         finish_after_capture=lambda plan: capture_events.append("cleanup"),
     )
