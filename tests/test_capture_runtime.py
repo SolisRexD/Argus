@@ -16,6 +16,7 @@ def test_runtime_preparation_is_disabled_by_default():
     assert plan.console_commands == ()
     assert plan.warmup_seconds == 0.0
     assert plan.pause_after_warmup is False
+    assert plan.streaming_timeout_seconds == 120.0
 
 
 def test_project_pipeline_config_prepares_fastgeo_before_play():
@@ -73,6 +74,7 @@ def test_citysample_bigcity_profile_generates_world_partition_commands():
             "enabled": True,
             "profile": "citysample_bigcity",
             "warmup_seconds": 2.5,
+            "streaming_timeout_seconds": 45.0,
             "pause_after_warmup": True,
             "resume_after_capture": True,
             "citysample": {
@@ -94,6 +96,7 @@ def test_citysample_bigcity_profile_generates_world_partition_commands():
     assert plan.capture_point.y == 20.0
     assert plan.capture_point.z == 300.0
     assert plan.warmup_seconds == 2.5
+    assert plan.streaming_timeout_seconds == 45.0
     assert plan.pause_after_warmup is True
     assert plan.resume_after_capture is True
     assert plan.console_commands == (

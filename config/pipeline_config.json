@@ -86,6 +86,7 @@
     "pause_after_warmup": true,
     "resume_after_capture": true,
     "wait_for_streaming": true,
+    "streaming_timeout_seconds": 120.0,
     "move_player_to_capture": true,
     "restore_player_after_capture": false,
     "hide_player_during_capture": true,

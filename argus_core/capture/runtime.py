@@ -58,6 +58,7 @@ class RuntimePreparationPlan:
     pause_after_warmup: bool = False
     resume_after_capture: bool = False
     wait_for_streaming: bool = True
+    streaming_timeout_seconds: float = 120.0
     move_player_to_capture: bool = False
     restore_player_after_capture: bool = False
     hide_player_during_capture: bool = False
@@ -76,6 +77,7 @@ class RuntimePreparationPlan:
             "pause_after_warmup": self.pause_after_warmup,
             "resume_after_capture": self.resume_after_capture,
             "wait_for_streaming": self.wait_for_streaming,
+            "streaming_timeout_seconds": self.streaming_timeout_seconds,
             "move_player_to_capture": self.move_player_to_capture,
             "restore_player_after_capture": self.restore_player_after_capture,
             "hide_player_during_capture": self.hide_player_during_capture,
@@ -209,6 +211,10 @@ def build_runtime_preparation_plan(cfg, pose=None):
         pause_after_warmup=_parse_bool(runtime_cfg.get("pause_after_warmup"), default=False),
         resume_after_capture=_parse_bool(runtime_cfg.get("resume_after_capture"), default=False),
         wait_for_streaming=_parse_bool(runtime_cfg.get("wait_for_streaming"), default=True),
+        streaming_timeout_seconds=max(
+            0.0,
+            _parse_float(runtime_cfg.get("streaming_timeout_seconds"), 120.0),
+        ),
         move_player_to_capture=should_move_player,
         restore_player_after_capture=_parse_bool(
             runtime_cfg.get("restore_player_after_capture"),
