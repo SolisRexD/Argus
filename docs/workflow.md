@@ -123,6 +123,7 @@ UE 后端位于 `argus_backends/ue/`。其中 `editor.py` 负责 UE 日志、Wor
 | `build_semantic_pp_material.py` | 创建语义后处理材质与 RenderTarget |
 | `setup_dual_capture.py` | 创建或更新 SceneCapture2D Actor |
 | `capture_rgb_and_mask.py` | 单帧采集 |
+| `capture_player_view.py` | 从 CitySample Photo Mode 当前玩家最终相机触发交互式单帧采集 |
 | `batch_capture.py` | 按位姿 CSV 批量采集 |
 
 组件层位于 `scripts/argus_components/`，按职责拆分：
@@ -891,3 +892,21 @@ scripts/batch_capture.py
 - CSV 用于人工检查和 LLM 清洗；
 - 所有自动生成文件都放在 `output/`；
 - 所有运行前模板都放在 `config/`。
+
+---
+
+## 22. Photo Mode 交互捕捉
+
+交互捕捉仅支持 Unreal Editor 的 PIE：
+
+1. 在 PIE 启动前运行 `scripts/prepare_runtime_play_session.py`。
+2. 启动 PIE 并进入 CitySample Photo Mode。
+3. 使用原有 `W/A/S/D`、鼠标和 `Q/E` 自由探索。
+4. 按 `F9` 捕捉 `PlayerCameraManager` 的最终位置、旋转和 FOV。
+5. 等待屏幕显示 `Argus captured: <capture_id>` 后再拍下一张。
+6. 需要更多视角时重复探索和捕捉。
+7. 结束后先停止 PIE，再运行 `scripts/restore_runtime_play_session.py`。
+
+重复按下 `F9` 不会排队；如果已有捕捉正在执行，入口会复用当前 active Job。`capture_player_view.py` 发起新捕捉时，只在本次加载到内存的配置中将 `runtime.move_player_to_capture` 和 `runtime.restore_player_after_capture` 设为 `false`，不会修改磁盘配置，也不会改变现有单帧或批量入口的行为。
+
+输出位置保持不变：图像写入 `output/captures/`，元数据追加到 `output/capture_metadata.csv`。
