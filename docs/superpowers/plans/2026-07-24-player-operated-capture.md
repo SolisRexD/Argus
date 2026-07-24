@@ -995,7 +995,7 @@ assert rows[0]["capture_id"] != rows[1]["capture_id"]
 taxonomy = set()
 with (root / "config/semantic_classes.csv").open(encoding="utf-8-sig", newline="") as handle:
     for row in csv.DictReader(handle):
-        taxonomy.add((int(row["r"]), int(row["g"]), int(row["b"])))
+        taxonomy.add((int(row["color_r"]), int(row["color_g"]), int(row["color_b"])))
 
 for row, camera in zip(rows, expected):
     files = json.loads(row["files_json"])
