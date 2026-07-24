@@ -164,25 +164,9 @@ def _validate_capture_row_outputs(row, expected_streams):
     raise RuntimeError("采集结果不完整：{}".format("；".join(parts)))
 
 
-def capture_once(config_path=None, capture_id=None, pose=None):
-    """
-    单帧采集入口函数。
-
-    参数：
-    - config_path:
-        配置文件路径。如果为空，则使用默认配置。
-    - capture_id:
-        当前采集 ID。如果为空，由 CaptureService 自动生成。
-    - pose:
-        可选相机位姿。如果为空，则使用当前 SceneCapture 位置。
-
-    返回：
-    - result:
-        包含 capture_id 和各 stream 文件路径的字典。
-    """
-    cfg, _ = load_json_config(config_path)
+def capture_with_config(cfg, capture_id=None, pose=None):
+    """Start one capture from an already loaded pipeline config."""
     output_cfg = cfg["output"]
-
     expected_streams = expected_stream_names(cfg)
 
     def finalize(row):
@@ -202,6 +186,12 @@ def capture_once(config_path=None, capture_id=None, pose=None):
         pose=pose,
         finalize=finalize,
     )
+
+
+def capture_once(config_path=None, capture_id=None, pose=None):
+    """Load the pipeline config and start one asynchronous capture."""
+    cfg, _ = load_json_config(config_path)
+    return capture_with_config(cfg, capture_id=capture_id, pose=pose)
 
 
 if __name__ == "__main__":

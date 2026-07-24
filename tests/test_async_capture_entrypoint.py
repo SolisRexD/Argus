@@ -71,3 +71,33 @@ def test_single_capture_entrypoint_returns_job_and_finalizes_metadata(
     }
     assert FakeCaptureService.instance.finalize(row) is row
     assert FakePipeline.appended == [(metadata_path, row)]
+
+
+def test_capture_with_config_returns_job_and_finalizes_metadata(monkeypatch, tmp_path):
+    FakePipeline.appended = []
+    rgb_path = tmp_path / "rgb.png"
+    mask_path = tmp_path / "mask.png"
+    rgb_path.write_bytes(b"rgb")
+    mask_path.write_bytes(b"mask")
+    metadata_path = str(tmp_path / "metadata.csv")
+    cfg = {
+        "capture": {},
+        "output": {
+            "capture_dir": str(tmp_path),
+            "metadata_csv": metadata_path,
+        },
+    }
+    module = import_entrypoint(monkeypatch, cfg)
+
+    job = module.capture_with_config(cfg, capture_id="configured")
+
+    assert job is FakeCaptureService.instance.job
+    row = {
+        "capture_id": "configured",
+        "files_json": json.dumps(
+            {"rgb": str(rgb_path), "mask": str(mask_path)},
+            ensure_ascii=False,
+        ),
+    }
+    assert FakeCaptureService.instance.finalize(row) is row
+    assert FakePipeline.appended == [(metadata_path, row)]
