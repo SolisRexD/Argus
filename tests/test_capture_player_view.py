@@ -33,8 +33,14 @@ class FakeJob:
         self.error = None
         self.capture_id = "player_job"
         self.callback = None
+        self.callback_error = None
 
-    def add_done_callback(self, callback): self.callback = callback
+    def add_done_callback(self, callback):
+        if self.callback_error:
+            raise self.callback_error
+        self.callback = callback
+        if self.done:
+            callback(self)
 
     def finish(self, result=None, error=None):
         self.done = True
@@ -121,6 +127,17 @@ def test_success_reports_capture_id_and_clears_active_job(monkeypatch):
     assert messages[-1] == "Argus captured: player_001"
 
 
+def test_completed_job_reports_success_and_clears_active_job_immediately(monkeypatch):
+    module, entrypoint, messages = import_player_capture(monkeypatch)
+    entrypoint.job.done = True
+    entrypoint.job.result = {"capture_id": "player_001"}
+
+    assert module.capture_player_view() is entrypoint.job
+
+    assert module._active_job is None
+    assert messages[-1] == "Argus captured: player_001"
+
+
 def test_async_failure_reports_error_and_clears_active_job(monkeypatch):
     module, entrypoint, messages = import_player_capture(monkeypatch)
 
@@ -140,6 +157,19 @@ def test_sync_failure_reports_error_and_leaves_no_active_job(monkeypatch):
 
     assert module._active_job is None
     assert messages[-1] == "Argus capture failed: startup failed"
+
+
+def test_callback_registration_failure_retains_unfinished_active_job(monkeypatch):
+    module, entrypoint, messages = import_player_capture(monkeypatch)
+    entrypoint.job.callback_error = RuntimeError("registration failed")
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        module.capture_player_view()
+
+    assert module._active_job is entrypoint.job
+    assert messages[-1] == "Argus capture failed: registration failed"
+    assert module.capture_player_view() is entrypoint.job
+    assert len(entrypoint.calls) == 1
 
 
 def test_capture_requires_a_pie_world(monkeypatch):

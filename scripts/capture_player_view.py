@@ -54,6 +54,7 @@ def capture_player_view():
         _notify(None, "Argus capture already in progress")
         return _active_job
     context = None
+    job = None
     try:
         context = _get_player_controller()
         cfg, _ = load_json_config()
@@ -67,6 +68,7 @@ def capture_player_view():
         job.add_done_callback(lambda completed: _finish_capture(completed, context))
         return job
     except Exception as exc:
-        _active_job = None
+        if job is None or job.done:
+            _active_job = None
         _notify(context, "Argus capture failed: {}".format(exc))
         raise
