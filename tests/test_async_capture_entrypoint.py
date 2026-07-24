@@ -4,6 +4,9 @@ import sys
 import types
 
 
+config_load_calls = []
+
+
 class FakeCaptureService:
     instance = None
 
@@ -13,6 +16,9 @@ class FakeCaptureService:
         FakeCaptureService.instance = self
 
     def capture_once(self, cfg, capture_id=None, pose=None, finalize=None):
+        self.cfg = cfg
+        self.capture_id = capture_id
+        self.pose = pose
         self.finalize = finalize
         return self.job
 
@@ -25,12 +31,18 @@ class FakePipeline:
 
 
 def import_entrypoint(monkeypatch, cfg):
+    config_load_calls.clear()
+
+    def load_json_config(path):
+        config_load_calls.append(path)
+        return cfg, path
+
     fake_components = types.SimpleNamespace(
         CaptureService=FakeCaptureService,
         DataPipelineService=FakePipeline,
     )
     fake_common = types.SimpleNamespace(
-        load_json_config=lambda path: (cfg, path),
+        load_json_config=load_json_config,
         log=lambda message: None,
         resolve_path=lambda path: path,
     )
@@ -88,10 +100,15 @@ def test_capture_with_config_returns_job_and_finalizes_metadata(monkeypatch, tmp
         },
     }
     module = import_entrypoint(monkeypatch, cfg)
+    pose = object()
 
-    job = module.capture_with_config(cfg, capture_id="configured")
+    job = module.capture_with_config(cfg, capture_id="configured", pose=pose)
 
     assert job is FakeCaptureService.instance.job
+    assert FakeCaptureService.instance.cfg is cfg
+    assert FakeCaptureService.instance.capture_id == "configured"
+    assert FakeCaptureService.instance.pose is pose
+    assert config_load_calls == []
     row = {
         "capture_id": "configured",
         "files_json": json.dumps(
