@@ -922,7 +922,7 @@ Immediately call it a second time. Expected: one `Argus capture started`, one `A
 After the first Job finishes, submit this command in the UE Python console:
 
 ```python
-pawn = controller.get_pawn()
+pawn = controller.get_controlled_pawn()
 assert pawn
 current_location = pawn.get_actor_location()
 current_rotation = pawn.get_actor_rotation()
