@@ -120,7 +120,7 @@ manifest 位于 CitySample 外部备份目录，例如：
 
 最少记录：
 
-- schema 版本和状态：`installing`、`installed` 或 `restored`
+- schema 版本和状态：`installing`、`installed`、`restoring`、`restored` 或 `failed`
 - Argus commit
 - 三个根路径
 - 创建时间与备份目录
