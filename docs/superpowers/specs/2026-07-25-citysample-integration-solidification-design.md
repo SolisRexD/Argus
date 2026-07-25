@@ -70,7 +70,7 @@ Argus 已在 UE 5.8 CitySample Photo Mode 中完成玩家自由探索与选择�
 - CitySample：`E:\UnrealProject\CitySample`
 - UE：`E:\UE_5.8`
 
-对应命令行参数为 `--argus-root`、`--citysample-root` 和 `--ue-root`。不进行路径自动发现。
+对应命令行参数为 `--argus-root`、`--citysample-root` 和 `--ue-root`。`verify` 与 `restore` 接受 `--manifest`；未提供时，只在备份根目录中恰好存在一个匹配当前三根路径且状态为 `installed` 的 manifest 时自动选择。除此之外不进行路径自动发现。
 
 ### `scripts/citysample_argus_assets.py`
 
