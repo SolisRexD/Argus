@@ -1,6 +1,7 @@
 import ast
 import codecs
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -14,11 +15,13 @@ from scripts.citysample_argus_integration import (
     HEADER_REL,
     IntegrationError,
     LEGACY_BACKUP_PATHS,
+    MANAGED_FILES,
     MAPPING_REL,
     SOURCE_REL,
     create_manifest,
     expected_source_fragments,
     find_manifest,
+    load_manifest,
     patch_source_texts,
     read_source_files,
     restore_manifest,
@@ -73,6 +76,44 @@ def make_citysample_tree(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return root
+
+
+def make_legacy_backup(root, citysample_root):
+    for relative, legacy_relative in LEGACY_BACKUP_PATHS.items():
+        destination = root / legacy_relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(citysample_root / relative, destination)
+    return root
+
+
+def mark_installed(manifest_path, citysample_root):
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for row in manifest["files"]:
+        path = citysample_root / row["path"]
+        row["installed_sha256"] = sha256_file(path) if path.is_file() else None
+    manifest["state"] = "installed"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def make_installed_files(citysample_root):
+    for relative in EXISTING_FILES:
+        (citysample_root / relative).write_bytes(
+            b"installed:" + relative.as_posix().encode("utf-8")
+        )
+    action_path = citysample_root / ACTION_REL
+    action_path.parent.mkdir(parents=True, exist_ok=True)
+    action_path.write_bytes(b"installed-action")
+    return action_path
+
+
+def managed_bytes(citysample_root):
+    return {
+        relative: (citysample_root / relative).read_bytes()
+        if (citysample_root / relative).is_file()
+        else None
+        for relative in MANAGED_FILES
+    }
 
 
 def test_patch_source_texts_installs_exact_contract():
@@ -184,9 +225,48 @@ def test_source_io_preserves_bom_and_newlines(tmp_path):
     )
 
 
+def test_source_atomic_write_preserves_preexisting_fixed_temp(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    formats = read_source_files(citysample_root)
+    sentinel = (citysample_root / HEADER_REL).with_name(
+        HEADER_REL.name + ".argus.tmp"
+    )
+    sentinel.write_bytes(b"keep")
+
+    write_source_files(
+        citysample_root,
+        tuple(item[0] for item in formats),
+        formats,
+    )
+
+    assert sentinel.read_bytes() == b"keep"
+
+
+def test_source_atomic_write_cleans_temp_after_replace_failure(tmp_path, monkeypatch):
+    citysample_root = make_citysample_tree(tmp_path)
+    formats = read_source_files(citysample_root)
+    parent = (citysample_root / HEADER_REL).parent
+    before = set(parent.iterdir())
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.os.replace",
+        lambda source, destination: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        write_source_files(
+            citysample_root,
+            tuple(item[0] for item in formats),
+            formats,
+        )
+
+    assert set(parent.iterdir()) == before
+
+
 def test_create_manifest_copies_only_managed_backups(tmp_path):
     citysample_root = make_citysample_tree(tmp_path)
-    legacy = tmp_path / "legacy"
+    action_path = citysample_root / ACTION_REL
+    action_path.parent.mkdir(parents=True, exist_ok=True)
+    action_path.write_bytes(b"installed-action")
     legacy_paths = {
         HEADER_REL: Path("Source/PhotoModeComponent.h"),
         SOURCE_REL: Path("Source/PhotoModeComponent.cpp"),
@@ -195,12 +275,8 @@ def test_create_manifest_copies_only_managed_backups(tmp_path):
         BLUEPRINT_REL: Path("Content/BP_PhotoModeComponent.uasset"),
     }
     assert LEGACY_BACKUP_PATHS == legacy_paths
-    for legacy_relative in legacy_paths.values():
-        destination = legacy / legacy_relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
     (legacy / "UnexpectedSaves").mkdir()
-    for relative, legacy_relative in legacy_paths.items():
-        shutil.copy2(citysample_root / relative, legacy / legacy_relative)
     (legacy / "UnexpectedSaves/ignored.uasset").write_bytes(b"ignored")
 
     manifest_path = create_manifest(
@@ -221,7 +297,137 @@ def test_create_manifest_copies_only_managed_backups(tmp_path):
         row for row in manifest["files"] if row["path"] == ACTION_REL.as_posix()
     )
     assert action["created"] is True
+    assert action["backup"] is None
     assert action["original_sha256"] is None
+
+
+def test_create_manifest_fresh_install_rejects_preexisting_action(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    action_path = citysample_root / ACTION_REL
+    action_path.parent.mkdir(parents=True, exist_ok=True)
+    action_path.write_bytes(b"pre-existing")
+
+    with pytest.raises(IntegrationError, match="action"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            stamp="fresh-collision",
+        )
+
+    assert action_path.read_bytes() == b"pre-existing"
+    assert not (
+        citysample_root / "ArgusBackups/argus_integration/fresh-collision"
+    ).exists()
+
+
+def test_create_manifest_adoption_requires_existing_regular_action(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+
+    with pytest.raises(IntegrationError, match="action"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            adopt_backup=legacy,
+            stamp="missing-action",
+        )
+
+    assert not (
+        citysample_root / "ArgusBackups/argus_integration/missing-action"
+    ).exists()
+
+
+def test_create_manifest_adoption_rejects_action_directory(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+    (citysample_root / ACTION_REL).mkdir(parents=True)
+
+    with pytest.raises(IntegrationError, match="action"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            adopt_backup=legacy,
+            stamp="action-directory",
+        )
+
+
+def test_create_manifest_adoption_rejects_action_symlink(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+    target = tmp_path / "outside-action.uasset"
+    target.write_bytes(b"outside")
+    action_path = citysample_root / ACTION_REL
+    action_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        action_path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symlinks unavailable: {}".format(exc))
+
+    with pytest.raises(IntegrationError, match="action"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            adopt_backup=legacy,
+            stamp="action-symlink",
+        )
+
+    assert target.read_bytes() == b"outside"
+
+
+def test_create_manifest_preflights_sources_before_creating_backup(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    (citysample_root / BLUEPRINT_REL).unlink()
+    backup_dir = citysample_root / "ArgusBackups/argus_integration/missing-source"
+
+    with pytest.raises(IntegrationError, match="managed file"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            stamp="missing-source",
+        )
+
+    assert not backup_dir.exists()
+
+
+def test_create_manifest_removes_new_backup_after_copy_failure(tmp_path, monkeypatch):
+    citysample_root = make_citysample_tree(tmp_path)
+    backup_dir = citysample_root / "ArgusBackups/argus_integration/copy-failure"
+
+    def fail_copy(source, destination):
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.shutil.copy2", fail_copy
+    )
+
+    with pytest.raises(OSError, match="copy failed"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            stamp="copy-failure",
+        )
+
+    assert not backup_dir.exists()
+
+
+def test_create_manifest_rejects_nested_stamp(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+
+    with pytest.raises(IntegrationError, match="stamp"):
+        create_manifest(
+            citysample_root,
+            tmp_path / "Argus",
+            tmp_path / "UE",
+            stamp="../outside",
+        )
+
+    assert not (citysample_root / "ArgusBackups/outside").exists()
 
 
 def test_find_manifest_matches_all_three_roots(tmp_path):
@@ -250,6 +456,152 @@ def test_find_manifest_matches_all_three_roots(tmp_path):
     ) == wanted
 
 
+def test_restore_rejects_live_path_traversal_before_hashing_or_mutation(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="live-traversal",
+    )
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"victim")
+    header_before = (citysample_root / HEADER_REL).read_bytes()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["path"] = "../victim.txt"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.sha256_file",
+        lambda path: pytest.fail("hashing occurred before manifest validation"),
+    )
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        restore_manifest(manifest_path, check_drift=False)
+
+    assert victim.read_bytes() == b"victim"
+    assert (citysample_root / HEADER_REL).read_bytes() == header_before
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "installing"
+
+
+def test_restore_rejects_backup_path_traversal_before_hashing_or_mutation(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="backup-traversal",
+    )
+    victim = manifest_path.parent.parent / "victim.txt"
+    victim.write_bytes(b"victim")
+    header_before = (citysample_root / HEADER_REL).read_bytes()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["backup"] = "../victim.txt"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.sha256_file",
+        lambda path: pytest.fail("hashing occurred before manifest validation"),
+    )
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        restore_manifest(manifest_path, check_drift=False)
+
+    assert victim.read_bytes() == b"victim"
+    assert (citysample_root / HEADER_REL).read_bytes() == header_before
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "installing"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "state",
+        "roots",
+        "backup_dir",
+        "path_type",
+        "duplicate",
+        "existing_created",
+        "existing_backup",
+        "original_hash",
+        "installed_hash",
+        "action",
+    ],
+)
+def test_load_manifest_rejects_invalid_contract(tmp_path, case):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="invalid-{}".format(case),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if case == "state":
+        manifest["state"] = "unknown"
+    elif case == "roots":
+        manifest["roots"]["extra"] = str(tmp_path)
+    elif case == "backup_dir":
+        manifest["backup_dir"] = str(tmp_path)
+    elif case == "path_type":
+        manifest["files"][0]["path"] = []
+    elif case == "duplicate":
+        manifest["files"][-1] = dict(manifest["files"][0])
+    elif case == "existing_created":
+        manifest["files"][0]["created"] = True
+    elif case == "existing_backup":
+        manifest["files"][0]["backup"] = "files/wrong"
+    elif case == "original_hash":
+        manifest["files"][0]["original_sha256"] = None
+    elif case == "installed_hash":
+        manifest["files"][0]["installed_sha256"] = "not-a-hash"
+    else:
+        manifest["files"][-1]["backup"] = "files/action"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(manifest_path)
+
+
+def test_load_manifest_rejects_wrong_location(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="right-location",
+    )
+    wrong_path = tmp_path / "manifest.json"
+    shutil.copy2(manifest_path, wrong_path)
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(wrong_path)
+
+
+def test_load_manifest_rejects_live_symlink_escape_when_supported(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="symlink-escape",
+    )
+    victim = tmp_path / "outside.txt"
+    victim.write_bytes(b"outside")
+    header_path = citysample_root / HEADER_REL
+    header_path.unlink()
+    try:
+        header_path.symlink_to(victim)
+    except OSError as exc:
+        pytest.skip("symlinks unavailable: {}".format(exc))
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(manifest_path)
+
+    assert victim.read_bytes() == b"outside"
+
+
 def test_restore_manifest_rejects_installed_drift(tmp_path):
     citysample_root = make_citysample_tree(tmp_path)
     manifest_path = create_manifest(
@@ -269,6 +621,108 @@ def test_restore_manifest_rejects_installed_drift(tmp_path):
 
     with pytest.raises(IntegrationError, match="drift"):
         restore_manifest(manifest_path)
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "missing"])
+def test_restore_preflights_all_backups_before_mutation(tmp_path, failure):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="backup-{}".format(failure),
+    )
+    make_installed_files(citysample_root)
+    manifest = mark_installed(manifest_path, citysample_root)
+    row = manifest["files"][0 if failure == "corrupt" else -2]
+    backup_path = manifest_path.parent / row["backup"]
+    if failure == "corrupt":
+        backup_path.write_bytes(b"corrupt")
+    else:
+        backup_path.unlink()
+    live_before = managed_bytes(citysample_root)
+    manifest_before = manifest_path.read_bytes()
+
+    with pytest.raises(IntegrationError, match="backup"):
+        restore_manifest(manifest_path)
+
+    assert managed_bytes(citysample_root) == live_before
+    assert manifest_path.read_bytes() == manifest_before
+
+
+def test_restore_uses_atomic_replacements_and_deletes_action_last(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="atomic-restore",
+    )
+    action_path = make_installed_files(citysample_root)
+    mark_installed(manifest_path, citysample_root)
+    sentinel = manifest_path.with_name(manifest_path.name + ".argus.tmp")
+    sentinel.write_bytes(b"keep")
+    live_paths = {citysample_root / relative for relative in EXISTING_FILES}
+    replacements = []
+    real_replace = os.replace
+
+    def record_replace(source, destination):
+        source = Path(source)
+        destination = Path(destination)
+        if destination in live_paths:
+            assert action_path.is_file()
+            replacements.append((source, destination))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.os.replace", record_replace
+    )
+
+    restore_manifest(manifest_path)
+
+    assert {destination for _, destination in replacements} == live_paths
+    assert all(source.parent == destination.parent for source, destination in replacements)
+    assert all(
+        source != destination.with_name(destination.name + ".argus.tmp")
+        for source, destination in replacements
+    )
+    assert not action_path.exists()
+    assert sentinel.read_bytes() == b"keep"
+
+
+def test_restore_cleans_temp_and_keeps_action_if_replace_fails(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="replace-failure",
+    )
+    action_path = make_installed_files(citysample_root)
+    mark_installed(manifest_path, citysample_root)
+    header_path = citysample_root / HEADER_REL
+    parent_before = set(header_path.parent.iterdir())
+    real_replace = os.replace
+
+    def fail_header_replace(source, destination):
+        if Path(destination) == header_path:
+            raise OSError("replace failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.os.replace", fail_header_replace
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        restore_manifest(manifest_path)
+
+    assert set(header_path.parent.iterdir()) == parent_before
+    assert action_path.read_bytes() == b"installed-action"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "restoring"
 
 
 def test_restore_manifest_restores_existing_and_removes_created_file(tmp_path):

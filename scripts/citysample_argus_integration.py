@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,24 @@ LEGACY_BACKUP_PATHS = {
 
 class IntegrationError(RuntimeError):
     pass
+
+
+def _resolved_within(path, root, label):
+    root = Path(root).resolve()
+    try:
+        resolved = Path(path).resolve()
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise IntegrationError("{} escapes its root".format(label))
+    return resolved
+
+
+def _is_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
 
 
 def sha256_file(path):
@@ -66,9 +85,7 @@ def _write_text_atomic(path, text, bom, newline):
     payload = text.replace("\n", newline).encode("utf-8")
     if bom:
         payload = codecs.BOM_UTF8 + payload
-    temporary = path.with_name(path.name + ".argus.tmp")
-    temporary.write_bytes(payload)
-    os.replace(temporary, path)
+    _replace_bytes_atomic(path, payload)
 
 
 def write_source_files(citysample_root, texts, formats):
@@ -81,16 +98,45 @@ def write_source_files(citysample_root, texts, formats):
 
 def _write_json_atomic(path, value):
     path = Path(path)
-    temporary = path.with_name(path.name + ".argus.tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _replace_bytes_atomic(
+        path,
+        (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
-    os.replace(temporary, path)
+
+
+def _temporary_path(path):
+    descriptor, name = tempfile.mkstemp(
+        prefix=Path(path).name + ".",
+        suffix=".tmp",
+        dir=Path(path).parent,
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _replace_bytes_atomic(path, payload):
+    path = Path(path)
+    temporary = _temporary_path(path)
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _copy_file_atomic(source, destination):
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _temporary_path(destination)
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _backup_source(adopt_backup, relative, live_path):
-    if not adopt_backup:
+    if adopt_backup is None:
         return live_path
     source = Path(adopt_backup) / LEGACY_BACKUP_PATHS[relative]
     if not source.is_file():
@@ -110,63 +156,183 @@ def create_manifest(
     argus_root = Path(argus_root).resolve()
     ue_root = Path(ue_root).resolve()
     stamp = stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp_path = Path(stamp)
+    if len(stamp_path.parts) != 1 or stamp_path.name in ("", ".", ".."):
+        raise IntegrationError("backup stamp must be one directory name")
+    stamp = stamp_path.name
     backup_dir = citysample_root / "ArgusBackups/argus_integration" / stamp
-    if backup_dir.exists():
+    if os.path.lexists(backup_dir):
         raise IntegrationError("backup already exists: {}".format(backup_dir))
-    files_dir = backup_dir / "files"
-    files_dir.mkdir(parents=True)
-    rows = []
+    sources = []
+    adopt_root = Path(adopt_backup).resolve() if adopt_backup is not None else None
     for relative in EXISTING_FILES:
-        live_path = citysample_root / relative
+        live_path = _resolved_within(
+            citysample_root / relative, citysample_root, "managed file"
+        )
         source = _backup_source(adopt_backup, relative, live_path)
+        source = _resolved_within(
+            source,
+            adopt_root or citysample_root,
+            "adopt backup" if adopt_root else "managed file",
+        )
         if not live_path.is_file() or not source.is_file():
             raise IntegrationError("managed file is missing: {}".format(relative))
-        backup_path = files_dir / relative
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, backup_path)
+        sources.append((relative, source))
+    action_path = citysample_root / ACTION_REL
+    if adopt_backup is None:
+        if os.path.lexists(action_path):
+            raise IntegrationError("action already exists: {}".format(ACTION_REL))
+    elif action_path.is_symlink() or not action_path.is_file():
+        raise IntegrationError("adopt action is missing or invalid: {}".format(ACTION_REL))
+
+    backup_dir.mkdir(parents=True)
+    try:
+        files_dir = backup_dir / "files"
+        files_dir.mkdir()
+        rows = []
+        for relative, source in sources:
+            backup_path = files_dir / relative
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, backup_path)
+            rows.append(
+                {
+                    "path": relative.as_posix(),
+                    "backup": backup_path.relative_to(backup_dir).as_posix(),
+                    "created": False,
+                    "original_sha256": sha256_file(backup_path),
+                    "installed_sha256": None,
+                }
+            )
         rows.append(
             {
-                "path": relative.as_posix(),
-                "backup": backup_path.relative_to(backup_dir).as_posix(),
-                "created": False,
-                "original_sha256": sha256_file(backup_path),
+                "path": ACTION_REL.as_posix(),
+                "backup": None,
+                "created": True,
+                "original_sha256": None,
                 "installed_sha256": None,
             }
         )
-    rows.append(
-        {
-            "path": ACTION_REL.as_posix(),
-            "backup": None,
-            "created": True,
-            "original_sha256": None,
-            "installed_sha256": None,
+        manifest = {
+            "schema_version": 1,
+            "state": "installing",
+            "argus_commit": commit or "",
+            "created_at": stamp,
+            "backup_dir": str(backup_dir),
+            "roots": {
+                "argus": str(argus_root),
+                "citysample": str(citysample_root),
+                "ue": str(ue_root),
+            },
+            "adopted": adopt_backup is not None,
+            "completed_phases": ["backup"],
+            "files": rows,
         }
-    )
-    manifest = {
-        "schema_version": 1,
-        "state": "installing",
-        "argus_commit": commit or "",
-        "created_at": stamp,
-        "backup_dir": str(backup_dir),
-        "roots": {
-            "argus": str(argus_root),
-            "citysample": str(citysample_root),
-            "ue": str(ue_root),
-        },
-        "adopted": bool(adopt_backup),
-        "completed_phases": ["backup"],
-        "files": rows,
+        manifest_path = backup_dir / "manifest.json"
+        _write_json_atomic(manifest_path, manifest)
+        return manifest_path
+    except Exception:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+
+
+def _validate_manifest(path, data):
+    def invalid(reason):
+        raise IntegrationError("invalid manifest: {}".format(reason))
+
+    if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
+        invalid("unsupported schema")
+    if data["schema_version"] != 1:
+        invalid("unsupported schema")
+    if data.get("state") not in {
+        "installing",
+        "installed",
+        "restoring",
+        "restored",
+        "failed",
+    }:
+        invalid("unsupported state")
+    roots = data.get("roots")
+    if not isinstance(roots, dict) or set(roots) != {"argus", "citysample", "ue"}:
+        invalid("roots")
+    if not all(isinstance(value, str) for value in roots.values()):
+        invalid("roots")
+    try:
+        citysample_root = Path(roots["citysample"]).resolve()
+        backup_root = (
+            citysample_root / "ArgusBackups/argus_integration"
+        ).resolve()
+        backup_dir = Path(data.get("backup_dir")).resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        invalid("paths")
+    if path.name != "manifest.json" or path.parent.parent != backup_root:
+        invalid("location")
+    if backup_dir != path.parent:
+        invalid("backup directory")
+
+    rows = data.get("files")
+    if not isinstance(rows, list) or len(rows) != len(MANAGED_FILES):
+        invalid("managed files")
+    expected = {relative.as_posix(): relative for relative in MANAGED_FILES}
+    seen = set()
+    required_keys = {
+        "path",
+        "backup",
+        "created",
+        "original_sha256",
+        "installed_sha256",
     }
-    manifest_path = backup_dir / "manifest.json"
-    _write_json_atomic(manifest_path, manifest)
-    return manifest_path
+    for row in rows:
+        if not isinstance(row, dict) or not required_keys <= set(row):
+            invalid("file row")
+        row_path = row["path"]
+        if not isinstance(row_path, str):
+            invalid("file path")
+        relative = expected.get(row_path)
+        if relative is None or row_path in seen:
+            invalid("managed files")
+        seen.add(row_path)
+        installed_hash = row["installed_sha256"]
+        if installed_hash is not None and not _is_sha256(installed_hash):
+            invalid("installed hash")
+        try:
+            _resolved_within(
+                citysample_root / relative,
+                citysample_root,
+                "manifest live path",
+            )
+        except IntegrationError as exc:
+            invalid(str(exc))
+        if relative == ACTION_REL:
+            if (
+                row["created"] is not True
+                or row["backup"] is not None
+                or row["original_sha256"] is not None
+            ):
+                invalid("action row")
+            continue
+        expected_backup = (Path("files") / relative).as_posix()
+        if (
+            row["created"] is not False
+            or row["backup"] != expected_backup
+            or not _is_sha256(row["original_sha256"])
+        ):
+            invalid("existing file row")
+        try:
+            _resolved_within(
+                path.parent / row["backup"],
+                path.parent,
+                "manifest backup path",
+            )
+        except IntegrationError as exc:
+            invalid(str(exc))
+    if seen != set(expected):
+        invalid("managed files")
 
 
 def load_manifest(manifest_path):
     path = Path(manifest_path).resolve()
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schema_version") != 1:
-        raise IntegrationError("unsupported manifest schema")
+    _validate_manifest(path, data)
     return path, data
 
 
@@ -179,22 +345,38 @@ def _check_installed_hashes(manifest_path, manifest):
             raise IntegrationError("installed file drift: {}".format(row["path"]))
 
 
+def _preflight_restore(manifest_path, manifest):
+    citysample_root = Path(manifest["roots"]["citysample"])
+    for row in manifest["files"]:
+        live_path = citysample_root / row["path"]
+        if os.path.lexists(live_path) and not live_path.is_file():
+            raise IntegrationError("invalid managed path: {}".format(row["path"]))
+        if row["created"]:
+            continue
+        backup_path = manifest_path.parent / row["backup"]
+        if not backup_path.is_file():
+            raise IntegrationError("backup is missing: {}".format(row["path"]))
+        if sha256_file(backup_path) != row["original_sha256"]:
+            raise IntegrationError("backup hash mismatch: {}".format(row["path"]))
+
+
 def restore_manifest(manifest_path, check_drift=True):
     manifest_path, manifest = load_manifest(manifest_path)
     if check_drift:
         _check_installed_hashes(manifest_path, manifest)
+    _preflight_restore(manifest_path, manifest)
     manifest["state"] = "restoring"
     _write_json_atomic(manifest_path, manifest)
     citysample_root = Path(manifest["roots"]["citysample"])
     for row in manifest["files"]:
-        live_path = citysample_root / row["path"]
-        if row["created"]:
-            if live_path.exists():
-                live_path.unlink()
-            continue
-        backup_path = manifest_path.parent / row["backup"]
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(backup_path, live_path)
+        if not row["created"]:
+            _copy_file_atomic(
+                manifest_path.parent / row["backup"],
+                citysample_root / row["path"],
+            )
+    action_path = citysample_root / ACTION_REL
+    if os.path.lexists(action_path):
+        action_path.unlink()
     manifest["state"] = "restored"
     manifest["completed_phases"].append("restore")
     _write_json_atomic(manifest_path, manifest)
