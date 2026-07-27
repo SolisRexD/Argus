@@ -25,6 +25,7 @@ from scripts.citysample_argus_integration import (
     SOURCE_REL,
     _integration_lock,
     _require_asset_result,
+    _run,
     _run_assets,
     _tasklist_has_unreal_editor,
     asset_command,
@@ -1122,8 +1123,8 @@ def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
 
 
 def test_build_command_uses_parameterized_roots(tmp_path):
-    ue_root = tmp_path / "UE"
-    citysample_root = tmp_path / "CitySample"
+    ue_root = tmp_path / "UE Root's"
+    citysample_root = tmp_path / "CitySample Root's"
 
     assert build_command(ue_root, citysample_root) == [
         str(ue_root / "Engine/Build/BatchFiles/Build.bat"),
@@ -1134,6 +1135,62 @@ def test_build_command_uses_parameterized_roots(tmp_path):
         "-WaitMutex",
         "-FromMsBuild",
     ]
+
+
+@pytest.mark.parametrize("root_name", ["ue_root", "citysample_root"])
+@pytest.mark.parametrize("character", list('&|<>^()%!"\r\n'))
+def test_build_command_rejects_unsafe_cmd_metacharacters_in_roots(
+    tmp_path, root_name, character
+):
+    roots = {
+        "ue_root": tmp_path / "UE",
+        "citysample_root": tmp_path / "CitySample",
+    }
+    roots[root_name] = Path("{}{}unsafe".format(roots[root_name], character))
+
+    with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
+        build_command(roots["ue_root"], roots["citysample_root"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows cmd.exe batch parsing")
+def test_build_command_rejects_cmd_injection_before_batch_execution(tmp_path):
+    build_bat = tmp_path / "UE/Engine/Build/BatchFiles/Build.bat"
+    build_bat.parent.mkdir(parents=True)
+    batch_marker = tmp_path / "batch-ran.txt"
+    injection_marker = tmp_path / "injected.txt"
+    build_bat.write_text(
+        '@echo off\r\n> "{}" echo batch-ran\r\n'.format(batch_marker),
+        encoding="utf-8",
+    )
+    unsafe_citysample_root = Path(
+        "{}&echo.INJECTED>{}&rem.".format(tmp_path / "Project", injection_marker)
+    )
+    raw_project_argument = "-Project={}".format(
+        unsafe_citysample_root / "CitySample.uproject"
+    )
+    raw_command = [
+        str(build_bat),
+        "CitySampleEditor",
+        "Win64",
+        "Development",
+        raw_project_argument,
+        "-WaitMutex",
+        "-FromMsBuild",
+    ]
+
+    assert " " not in raw_project_argument
+    _run(raw_command)
+    assert batch_marker.read_text(encoding="utf-8").strip() == "batch-ran"
+    assert injection_marker.read_text(encoding="utf-8").strip() == "INJECTED"
+
+    batch_marker.unlink()
+    injection_marker.unlink()
+
+    with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
+        _run(build_command(tmp_path / "UE", unsafe_citysample_root))
+
+    assert not batch_marker.exists()
+    assert not injection_marker.exists()
 
 
 def test_asset_command_survives_windows_and_ue_command_line_reconstruction(tmp_path):

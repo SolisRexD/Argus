@@ -637,12 +637,21 @@ def verify_source_texts(header, source, build, argus_root):
 
 
 def build_command(ue_root, citysample_root):
+    unsafe = '&|<>^()%!"\r\n'
+    ue_root = Path(ue_root)
+    citysample_root = Path(citysample_root)
+    for label, root in (("UE", ue_root), ("CitySample", citysample_root)):
+        if any(character in str(root) for character in unsafe):
+            raise IntegrationError(
+                "unsafe cmd metacharacter in {} path: {}".format(label, root)
+            )
+
     return [
-        str(Path(ue_root) / "Engine/Build/BatchFiles/Build.bat"),
+        str(ue_root / "Engine/Build/BatchFiles/Build.bat"),
         "CitySampleEditor",
         "Win64",
         "Development",
-        "-Project={}".format(Path(citysample_root) / "CitySample.uproject"),
+        "-Project={}".format(citysample_root / "CitySample.uproject"),
         "-WaitMutex",
         "-FromMsBuild",
     ]
