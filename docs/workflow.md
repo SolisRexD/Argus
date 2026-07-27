@@ -910,3 +910,26 @@ scripts/batch_capture.py
 重复按下 `F9` 不会排队；如果已有捕捉正在执行，入口会复用当前 active Job。`capture_player_view.py` 发起新捕捉时，只在本次加载到内存的配置中将 `runtime.move_player_to_capture` 和 `runtime.restore_player_after_capture` 设为 `false`，不会修改磁盘配置，也不会改变现有单帧或批量入口的行为。
 
 输出位置保持不变：图像写入 `output/captures/`，元数据追加到 `output/capture_metadata.csv`。
+
+---
+
+## 23. CitySample integration lifecycle
+
+集成脚本默认使用本机的 Argus `D:\Study\Code\Python\UE\cv\Argus`、CitySample `E:\UnrealProject\CitySample` 和 UE `E:\UE_5.8`。需要其他位置时，分别用 `--argus-root`、`--citysample-root` 和 `--ue-root` 覆盖。运行下面任一命令前都必须关闭 Unreal Editor。
+
+采用现有备份并安装集成：
+
+```powershell
+python scripts/citysample_argus_integration.py install `
+  --adopt-backup 'E:\UnrealProject\CitySample\ArgusBackups\20260724_player_capture'
+```
+
+用安装生成的 manifest 验证或恢复：
+
+```powershell
+python scripts/citysample_argus_integration.py verify --manifest '<manifest.json>'
+
+python scripts/citysample_argus_integration.py restore --manifest '<manifest.json>'
+```
+
+`restore` 检测到 installed hash drift 时会拒绝恢复，避免覆盖安装后发生的外部修改。集成写入的 `.uasset` 文件保留在外部 CitySample 工程中，不进入 Argus Git；该流程也不会创建 Git tag。
