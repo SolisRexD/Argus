@@ -19,7 +19,7 @@ class FakeKey:
         self.name = name
 
     def __str__(self):
-        return self.name
+        return "<Struct 'Key' (...) {}>".format(self.name)
 
     def __eq__(self, other):
         return isinstance(other, FakeKey) and self.name == other.name
@@ -50,14 +50,14 @@ class FakeContext(FakeObject):
         self.mapped = []
 
     def unmap_key(self, action, key):
-        self.unmapped.append((action, str(key)))
+        self.unmapped.append((action, key))
         for index, mapping in enumerate(self.current_mappings):
-            if mapping.action is action and str(mapping.key) == str(key):
+            if mapping.action is action and mapping.key == key:
                 self.current_mappings.pop(index)
                 break
 
     def map_key(self, action, key):
-        self.mapped.append((action, str(key)))
+        self.mapped.append((action, key))
         self.current_mappings.append(FakeMapping(action, key))
 
 
@@ -104,8 +104,10 @@ class FakeUnreal:
     def load_blueprint_class(self, path):
         return self.blueprint_class
 
-    def save_asset(self, path):
-        self.saved.append(path)
+    def save_asset(self, path, only_if_is_dirty=True):
+        if path.endswith("IM_PM_Simple_MappingContext") and only_if_is_dirty:
+            return False
+        self.saved.append((path, only_if_is_dirty))
         return True
 
 
@@ -130,14 +132,14 @@ def test_install_assets_creates_action_maps_f9_sets_cdo_and_saves(monkeypatch):
     }
     assert fake.duplicated == [(module.SOURCE_ACTION_PATH, module.ACTION_PATH)]
     assert fake.action.value_type == fake.module.InputActionValueType.BOOLEAN
-    assert fake.context.unmapped == [(fake.action, "F9")]
-    assert fake.context.mapped == [(fake.action, "F9")]
+    assert fake.context.unmapped == [(fake.action, FakeKey("F9"))]
+    assert fake.context.mapped == [(fake.action, FakeKey("F9"))]
     assert len(fake.context.current_mappings) == 1
     assert fake.default_object.capture_action is fake.action
     assert fake.saved == [
-        module.ACTION_PATH,
-        module.CONTEXT_PATH,
-        module.BLUEPRINT_PATH,
+        (module.ACTION_PATH, False),
+        (module.CONTEXT_PATH, False),
+        (module.BLUEPRINT_PATH, False),
     ]
 
 
@@ -158,8 +160,16 @@ def test_install_assets_removes_every_duplicate_f9_mapping(monkeypatch):
 
     module.install_assets()
 
-    assert fake.context.unmapped == [(fake.action, "F9")] * 3
+    assert fake.context.unmapped == [(fake.action, FakeKey("F9"))] * 3
     assert len(fake.context.current_mappings) == 1
+
+
+def test_verify_assets_compares_reflected_fkey_by_value(monkeypatch):
+    module, fake = import_asset_module(monkeypatch, action_exists=True)
+    fake.action.value_type = fake.module.InputActionValueType.BOOLEAN
+
+    assert str(fake.context.current_mappings[0].key) != "F9"
+    assert module.verify_assets()["f9_mappings"] == 1
 
 
 def test_verify_assets_rejects_missing_f9_mapping(monkeypatch):

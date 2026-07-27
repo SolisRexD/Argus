@@ -26,18 +26,15 @@ def _mapping_action(mapping):
     return mapping.get_editor_property("action")
 
 
-def _mapping_key(mapping):
-    return str(mapping.get_editor_property("key"))
-
-
-def _f9_mappings(action, context):
+def _f9_mappings(action, context, key):
     mappings = context.get_editor_property("default_key_mappings").get_editor_property(
         "mappings"
     )
     return [
         mapping
         for mapping in mappings
-        if _mapping_action(mapping) == action and _mapping_key(mapping) == "F9"
+        if _mapping_action(mapping) == action
+        and mapping.get_editor_property("key") == key
     ]
 
 
@@ -45,7 +42,7 @@ def verify_assets():
     action, context, default_object = _load_assets()
     if action.get_editor_property("value_type") != unreal.InputActionValueType.BOOLEAN:
         raise RuntimeError("Argus capture action is not Boolean")
-    matches = _f9_mappings(action, context)
+    matches = _f9_mappings(action, context, unreal.Key("F9"))
     if len(matches) != 1:
         raise RuntimeError("Argus capture action must have exactly one F9 mapping")
     if default_object.get_editor_property("capture_action") != action:
@@ -62,12 +59,12 @@ def install_assets():
     action, context, default_object = _load_assets()
     action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
     key = unreal.Key("F9")
-    for _ in _f9_mappings(action, context):
+    for _ in _f9_mappings(action, context, key):
         context.unmap_key(action, key)
     context.map_key(action, key)
     default_object.set_editor_property("capture_action", action)
     for path in (ACTION_PATH, CONTEXT_PATH, BLUEPRINT_PATH):
-        if not unreal.EditorAssetLibrary.save_asset(path):
+        if not unreal.EditorAssetLibrary.save_asset(path, False):
             raise RuntimeError("asset could not be saved: {}".format(path))
     return verify_assets()
 
