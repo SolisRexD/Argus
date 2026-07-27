@@ -6,11 +6,13 @@ import argparse
 import codecs
 import hashlib
 import json
+import msvcrt
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -689,6 +691,42 @@ def require_editor_closed():
         )
 
 
+@contextmanager
+def _integration_lock(citysample_root):
+    lock_path = (
+        Path(citysample_root).resolve() / ".argus_citysample_integration.lock"
+    )
+    try:
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        raise IntegrationError(
+            "cannot open CitySample integration lock: {}".format(lock_path)
+        ) from exc
+    locked = False
+    try:
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            locked = True
+        except OSError as exc:
+            raise IntegrationError(
+                "CitySample integration lock is unavailable: {}".format(lock_path)
+            ) from exc
+        yield
+    finally:
+        if locked:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        handle.close()
+
+
 def _require_asset_result(result_path):
     path = Path(result_path)
     if not path.is_file():
@@ -860,8 +898,11 @@ def install_integration(
         rollback_error = None
         if not installed:
             try:
-                restore_manifest(manifest_path, check_drift=False)
+                restore_manifest(
+                    manifest_path, check_drift=False, finalize=False
+                )
                 _run(build_command(ue_root, citysample_root))
+                _finalize_restore(manifest_path)
             except Exception as rollback_exc:
                 rollback_error = str(rollback_exc)
         try:
@@ -888,10 +929,13 @@ def restore_integration(manifest_path):
     try:
         _run(build_command(ue_root, citysample_root))
     except Exception as exc:
-        manifest_path, manifest = load_manifest(manifest_path)
-        manifest["state"] = "failed"
-        manifest["error"] = str(exc)
-        _write_json_atomic(manifest_path, manifest)
+        try:
+            manifest_path, manifest = load_manifest(manifest_path)
+            manifest["state"] = "failed"
+            manifest["error"] = str(exc)
+            _write_json_atomic(manifest_path, manifest)
+        except Exception:
+            pass
         raise
     return _finalize_restore(manifest_path)
 
@@ -909,30 +953,37 @@ def _parser():
     return parser
 
 
+def _lock_citysample_root(args):
+    if args.command != "install" and args.manifest is not None:
+        return Path(load_manifest(args.manifest)[1]["roots"]["citysample"])
+    return args.citysample_root
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
-    require_editor_closed()
-    if args.command == "install":
-        result = install_integration(
-            args.argus_root,
-            args.citysample_root,
-            args.ue_root,
-            adopt_backup=args.adopt_backup,
-        )
-    else:
-        manifest_path = find_manifest(
-            args.argus_root,
-            args.citysample_root,
-            args.ue_root,
-            args.manifest,
-        )
-        result = (
-            verify_integration(manifest_path)
-            if args.command == "verify"
-            else restore_integration(manifest_path)
-        )
-    print(result)
-    return 0
+    with _integration_lock(_lock_citysample_root(args)):
+        require_editor_closed()
+        if args.command == "install":
+            result = install_integration(
+                args.argus_root,
+                args.citysample_root,
+                args.ue_root,
+                adopt_backup=args.adopt_backup,
+            )
+        else:
+            manifest_path = find_manifest(
+                args.argus_root,
+                args.citysample_root,
+                args.ue_root,
+                args.manifest,
+            )
+            result = (
+                verify_integration(manifest_path)
+                if args.command == "verify"
+                else restore_integration(manifest_path)
+            )
+        print(result)
+        return 0
 
 
 if __name__ == "__main__":

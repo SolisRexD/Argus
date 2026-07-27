@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +23,7 @@ from scripts.citysample_argus_integration import (
     MANAGED_FILES,
     MAPPING_REL,
     SOURCE_REL,
+    _integration_lock,
     _require_asset_result,
     _run_assets,
     _tasklist_has_unreal_editor,
@@ -169,6 +172,28 @@ def reconstruct_ue_windows_command(command):
 def asset_result_path(command):
     value = command[2].split(' --result \\"', 1)[1]
     return Path(value.rsplit('\\"', 1)[0])
+
+
+def try_integration_lock_in_subprocess(citysample_root):
+    code = """
+import sys
+from scripts.citysample_argus_integration import IntegrationError, _integration_lock
+
+try:
+    with _integration_lock(sys.argv[1]):
+        pass
+except IntegrationError as exc:
+    print(exc)
+    raise SystemExit(23)
+"""
+    return subprocess.run(
+        [sys.executable, "-c", code, str(citysample_root)],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 def mark_installed(manifest_path, citysample_root):
@@ -1054,6 +1079,35 @@ def test_restore_integration_interrupt_leaves_restoring(tmp_path, monkeypatch):
     assert "restore" not in manifest["completed_phases"]
 
 
+@pytest.mark.parametrize("record_failure", ["load", "write"])
+def test_restore_integration_re_raises_build_error_when_recording_fails(
+    tmp_path, monkeypatch, record_failure
+):
+    manifest_path = make_installed_integration(tmp_path)
+    original = IntegrationError("original rebuild failure")
+
+    def fail_record(*args, **kwargs):
+        raise IntegrationError("manifest recording failed")
+
+    def fail_build(command):
+        monkeypatch.setattr(
+            "scripts.citysample_argus_integration.{}".format(
+                "load_manifest"
+                if record_failure == "load"
+                else "_write_json_atomic"
+            ),
+            fail_record,
+        )
+        raise original
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fail_build)
+
+    with pytest.raises(IntegrationError) as caught:
+        restore_integration(manifest_path)
+
+    assert caught.value is original
+
+
 def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
     assert _tasklist_has_unreal_editor(
         '"UNREALEDITOR.EXE","52508","Console","1","2,048 K"'
@@ -1188,7 +1242,39 @@ def test_require_editor_closed_rejects_check_failure_or_running_editor(
     ]
 
 
-def test_main_checks_editor_before_starting_integration(monkeypatch):
+def test_integration_lock_rejects_cross_process_competition(tmp_path):
+    citysample_root = tmp_path / "CitySample"
+    citysample_root.mkdir()
+
+    with _integration_lock(citysample_root):
+        completed = try_integration_lock_in_subprocess(citysample_root)
+
+    assert completed.returncode == 23
+    assert "lock" in completed.stdout.casefold()
+
+
+def test_integration_lock_releases_for_next_process(tmp_path):
+    citysample_root = tmp_path / "CitySample"
+    citysample_root.mkdir()
+
+    with _integration_lock(citysample_root):
+        pass
+
+    assert try_integration_lock_in_subprocess(citysample_root).returncode == 0
+
+
+def test_integration_lock_open_failure_is_integration_error(tmp_path):
+    citysample_root = tmp_path / "CitySample"
+    citysample_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="lock"):
+        with _integration_lock(citysample_root):
+            pass
+
+
+def test_main_checks_editor_before_starting_integration(tmp_path, monkeypatch):
+    citysample_root = tmp_path / "CitySample"
+    citysample_root.mkdir()
     monkeypatch.setattr(
         "scripts.citysample_argus_integration.require_editor_closed",
         lambda: (_ for _ in ()).throw(IntegrationError("editor open")),
@@ -1199,7 +1285,56 @@ def test_main_checks_editor_before_starting_integration(monkeypatch):
     )
 
     with pytest.raises(IntegrationError, match="editor open"):
-        main(["install"])
+        main(["install", "--citysample-root", str(citysample_root)])
+
+
+def test_main_uses_explicit_manifest_citysample_root_and_reloads_inside_lock(
+    tmp_path, monkeypatch
+):
+    manifest_path = make_installed_integration(tmp_path)
+    expected_root = Path(load_manifest(manifest_path)[1]["roots"]["citysample"])
+    real_load_manifest = load_manifest
+    locked = False
+    lock_roots = []
+    load_lock_states = []
+
+    @contextmanager
+    def fake_lock(citysample_root):
+        nonlocal locked
+        lock_roots.append(Path(citysample_root).resolve())
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def record_load(path):
+        load_lock_states.append(locked)
+        return real_load_manifest(path)
+
+    def check_editor():
+        assert locked
+
+    def verify(manifest):
+        assert locked
+        return manifest
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._integration_lock", fake_lock
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.load_manifest", record_load
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.require_editor_closed", check_editor
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.verify_integration", verify
+    )
+
+    assert main(["verify", "--manifest", str(manifest_path)]) == 0
+    assert lock_roots == [expected_root.resolve()]
+    assert load_lock_states[:2] == [False, True]
 
 
 def test_adopt_install_builds_and_verifies_without_rewriting_sources(
@@ -1391,6 +1526,43 @@ def test_fresh_install_rolls_back_and_records_completed_stages_on_asset_failure(
     result_path = asset_result_path(calls[1])
     assert result_path.parent == manifest_path.parent
     assert not result_path.exists()
+
+
+def test_install_rollback_interrupt_leaves_manifest_restoring(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    originals = managed_bytes(citysample_root)
+    builds = 0
+
+    def fake_run(command):
+        nonlocal builds
+        if any(part.startswith("-ExecutePythonScript=") for part in command):
+            raise IntegrationError("asset failed")
+        builds += 1
+        if builds == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fake_run)
+
+    with pytest.raises(KeyboardInterrupt):
+        install_integration(
+            argus_root,
+            citysample_root,
+            ue_root,
+            commit="abc123",
+            stamp="rollback-interrupt",
+        )
+
+    assert managed_bytes(citysample_root) == originals
+    manifest_path = (
+        citysample_root
+        / "ArgusBackups/argus_integration/rollback-interrupt/manifest.json"
+    )
+    _, manifest = load_manifest(manifest_path)
+    assert manifest["state"] == "restoring"
+    assert "restore" not in manifest["completed_phases"]
 
 
 def test_install_re_raises_original_when_rollback_and_recording_fail(
