@@ -25,6 +25,7 @@ ACTION_REL = Path("Content/Input/PhotoMode/IA_PM_ArgusCapture.uasset")
 
 EXISTING_FILES = (HEADER_REL, SOURCE_REL, BUILD_REL, MAPPING_REL, BLUEPRINT_REL)
 MANAGED_FILES = EXISTING_FILES + (ACTION_REL,)
+MANIFEST_PHASES = {"backup", "source", "build", "assets", "verify", "restore"}
 LEGACY_BACKUP_PATHS = {
     HEADER_REL: Path("Source/PhotoModeComponent.h"),
     SOURCE_REL: Path("Source/PhotoModeComponent.cpp"),
@@ -243,7 +244,8 @@ def _validate_manifest(path, data):
         invalid("unsupported schema")
     if data["schema_version"] != 1:
         invalid("unsupported schema")
-    if data.get("state") not in {
+    state = data.get("state")
+    if state not in {
         "installing",
         "installed",
         "restoring",
@@ -251,6 +253,16 @@ def _validate_manifest(path, data):
         "failed",
     }:
         invalid("unsupported state")
+    phases = data.get("completed_phases")
+    if (
+        not isinstance(phases, list)
+        or not phases
+        or not all(isinstance(phase, str) for phase in phases)
+        or len(phases) != len(set(phases))
+        or "backup" not in phases
+        or not set(phases) <= MANIFEST_PHASES
+    ):
+        invalid("completed phases")
     roots = data.get("roots")
     if not isinstance(roots, dict) or set(roots) != {"argus", "citysample", "ue"}:
         invalid("roots")
@@ -292,6 +304,8 @@ def _validate_manifest(path, data):
             invalid("managed files")
         seen.add(row_path)
         installed_hash = row["installed_sha256"]
+        if state == "installed" and not _is_sha256(installed_hash):
+            invalid("installed hash")
         if installed_hash is not None and not _is_sha256(installed_hash):
             invalid("installed hash")
         try:
@@ -363,6 +377,8 @@ def _preflight_restore(manifest_path, manifest):
 def restore_manifest(manifest_path, check_drift=True):
     manifest_path, manifest = load_manifest(manifest_path)
     if check_drift:
+        if manifest["state"] != "installed":
+            raise IntegrationError("manifest is not installed")
         _check_installed_hashes(manifest_path, manifest)
     _preflight_restore(manifest_path, manifest)
     manifest["state"] = "restoring"

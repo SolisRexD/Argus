@@ -446,10 +446,9 @@ def test_find_manifest_matches_all_three_roots(tmp_path):
         commit="abc123",
         stamp="20260725_010204",
     )
+    make_installed_files(citysample_root)
     for path in (wanted, other):
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        manifest["state"] = "installed"
-        path.write_text(json.dumps(manifest), encoding="utf-8")
+        mark_installed(path, citysample_root)
 
     assert find_manifest(
         tmp_path / "ArgusA", citysample_root, tmp_path / "UEA"
@@ -579,6 +578,46 @@ def test_load_manifest_rejects_wrong_location(tmp_path):
         load_manifest(wrong_path)
 
 
+@pytest.mark.parametrize(
+    "phases",
+    [None, "backup", ["backup", "unknown"], ["backup", "backup"]],
+)
+def test_load_manifest_rejects_invalid_completed_phases(tmp_path, phases):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="invalid-phases-{}".format(type(phases).__name__),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if phases is None:
+        manifest.pop("completed_phases")
+    else:
+        manifest["completed_phases"] = phases
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(manifest_path)
+
+
+def test_load_manifest_requires_installed_hashes_for_installed_state(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="installed-hashes",
+    )
+    make_installed_files(citysample_root)
+    manifest = mark_installed(manifest_path, citysample_root)
+    manifest["files"][0]["installed_sha256"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(manifest_path)
+
+
 def test_load_manifest_rejects_live_symlink_escape_when_supported(tmp_path):
     citysample_root = make_citysample_tree(tmp_path)
     manifest_path = create_manifest(
@@ -611,16 +650,30 @@ def test_restore_manifest_rejects_installed_drift(tmp_path):
         commit="abc123",
         stamp="20260725_010203",
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for row in manifest["files"]:
-        path = citysample_root / row["path"]
-        row["installed_sha256"] = sha256_file(path) if path.exists() else None
-    manifest["state"] = "installed"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    make_installed_files(citysample_root)
+    mark_installed(manifest_path, citysample_root)
     (citysample_root / HEADER_REL).write_text("user change", encoding="utf-8")
 
     with pytest.raises(IntegrationError, match="drift"):
         restore_manifest(manifest_path)
+
+
+def test_restore_requires_installed_state_before_mutation(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="not-installed",
+    )
+    live_before = managed_bytes(citysample_root)
+    manifest_before = manifest_path.read_bytes()
+
+    with pytest.raises(IntegrationError, match="installed"):
+        restore_manifest(manifest_path)
+
+    assert managed_bytes(citysample_root) == live_before
+    assert manifest_path.read_bytes() == manifest_before
 
 
 @pytest.mark.parametrize("failure", ["corrupt", "missing"])
