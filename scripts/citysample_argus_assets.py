@@ -46,7 +46,9 @@ def verify_assets():
     action, context, default_object = _load_assets()
     if action.get_editor_property("value_type") != unreal.InputActionValueType.BOOLEAN:
         raise RuntimeError("Argus capture action is not Boolean")
-    matches = _f9_mappings(action, context, unreal.Key(key_name="F9"))
+    key = unreal.Key()
+    key.set_editor_property("key_name", "F9")
+    matches = _f9_mappings(action, context, key)
     if len(matches) != 1:
         raise RuntimeError("Argus capture action must have exactly one F9 mapping")
     if default_object.get_editor_property("capture_action") != action:
@@ -62,7 +64,8 @@ def install_assets():
             raise RuntimeError("Argus capture action could not be created")
     action, context, default_object = _load_assets()
     action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
-    key = unreal.Key(key_name="F9")
+    key = unreal.Key()
+    key.set_editor_property("key_name", "F9")
     for _ in _f9_mappings(action, context, key):
         context.unmap_key(action, key)
     context.map_key(action, key)
