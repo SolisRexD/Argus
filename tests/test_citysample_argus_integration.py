@@ -1,8 +1,10 @@
 import ast
 import codecs
+import ctypes
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +22,7 @@ from scripts.citysample_argus_integration import (
     MAPPING_REL,
     SOURCE_REL,
     _require_asset_result,
+    _run_assets,
     _tasklist_has_unreal_editor,
     asset_command,
     build_command,
@@ -32,6 +35,7 @@ from scripts.citysample_argus_integration import (
     patch_source_texts,
     read_source_files,
     require_editor_closed,
+    restore_integration,
     restore_manifest,
     sha256_file,
     verify_source_texts,
@@ -68,6 +72,8 @@ BASE_BUILD = """\
 \t\t\tPublicDependencyModuleNames.AddRange(new string[] { \"UnrealEd\" });
 \t\t}
 """
+
+FULL_INSTALL_PHASES = ["backup", "source", "build", "assets", "verify"]
 
 
 def make_citysample_tree(tmp_path):
@@ -112,12 +118,66 @@ def make_tool_roots(tmp_path, citysample_root):
     return argus_root, ue_root
 
 
+def make_installed_integration(tmp_path, stamp="installed-integration"):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = read_source_files(citysample_root)
+    manifest_path = create_manifest(
+        citysample_root,
+        argus_root,
+        ue_root,
+        commit="abc123",
+        stamp=stamp,
+    )
+    patched = patch_source_texts(
+        original[0][0], original[1][0], original[2][0], argus_root
+    )
+    write_source_files(citysample_root, patched, original)
+    action = citysample_root / ACTION_REL
+    action.parent.mkdir(parents=True, exist_ok=True)
+    action.write_bytes(b"action")
+    mark_installed(manifest_path, citysample_root)
+    return manifest_path
+
+
+def reconstruct_ue_windows_command(command):
+    argc = ctypes.c_int()
+    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_int),
+    )
+    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    argv = command_line_to_argv(subprocess.list2cmdline(command), ctypes.byref(argc))
+    assert argv
+    try:
+        arguments = [argv[index] for index in range(1, argc.value)]
+    finally:
+        local_free = ctypes.windll.kernel32.LocalFree
+        local_free.argtypes = (ctypes.c_void_p,)
+        local_free.restype = ctypes.c_void_p
+        local_free(ctypes.cast(argv, ctypes.c_void_p))
+    rebuilt = []
+    for argument in arguments:
+        if " " in argument:
+            quote = argument.find("=") + 1 if argument.startswith("-") and "=" in argument else 0
+            argument = argument[:quote] + '"' + argument[quote:] + '"'
+        rebuilt.append(argument)
+    return " ".join(rebuilt)
+
+
+def asset_result_path(command):
+    value = command[2].split(' --result \\"', 1)[1]
+    return Path(value.rsplit('\\"', 1)[0])
+
+
 def mark_installed(manifest_path, citysample_root):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for row in manifest["files"]:
         path = citysample_root / row["path"]
         row["installed_sha256"] = sha256_file(path) if path.is_file() else None
     manifest["state"] = "installed"
+    manifest["completed_phases"] = FULL_INSTALL_PHASES.copy()
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest
 
@@ -481,6 +541,36 @@ def test_find_manifest_matches_all_three_roots(tmp_path):
     ) == wanted
 
 
+def test_find_manifest_skips_bad_stale_candidates(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root = tmp_path / "Argus"
+    ue_root = tmp_path / "UE"
+    wanted = create_manifest(
+        citysample_root,
+        argus_root,
+        ue_root,
+        stamp="wanted",
+    )
+    make_installed_files(citysample_root)
+    mark_installed(wanted, citysample_root)
+    stale = (
+        citysample_root
+        / "ArgusBackups/argus_integration/stale/manifest.json"
+    )
+    stale.parent.mkdir()
+    stale.write_bytes(b"not json")
+
+    assert find_manifest(argus_root, citysample_root, ue_root) == wanted
+
+
+def test_find_manifest_explicit_bad_manifest_is_integration_error(tmp_path):
+    bad_manifest = tmp_path / "bad-manifest.json"
+    bad_manifest.write_bytes(b"not json")
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        find_manifest(tmp_path / "Argus", tmp_path / "CitySample", tmp_path / "UE", bad_manifest)
+
+
 def test_restore_rejects_live_path_traversal_before_hashing_or_mutation(
     tmp_path, monkeypatch
 ):
@@ -604,6 +694,20 @@ def test_load_manifest_rejects_wrong_location(tmp_path):
         load_manifest(wrong_path)
 
 
+@pytest.mark.parametrize("case", ["missing", "directory", "encoding", "json"])
+def test_load_manifest_normalizes_read_failures(tmp_path, case):
+    manifest_path = tmp_path / "manifest.json"
+    if case == "directory":
+        manifest_path.mkdir()
+    elif case == "encoding":
+        manifest_path.write_bytes(b"\xff")
+    elif case == "json":
+        manifest_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="manifest"):
+        load_manifest(manifest_path)
+
+
 @pytest.mark.parametrize(
     "phases",
     [None, "backup", ["backup", "unknown"], ["backup", "backup"]],
@@ -625,6 +729,67 @@ def test_load_manifest_rejects_invalid_completed_phases(tmp_path, phases):
 
     with pytest.raises(IntegrationError, match="manifest"):
         load_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("state", "phases"),
+    [
+        ("installing", ["backup", "build"]),
+        ("installing", FULL_INSTALL_PHASES),
+        ("installed", FULL_INSTALL_PHASES + ["restore"]),
+        ("installed", FULL_INSTALL_PHASES[:-1]),
+        ("restoring", FULL_INSTALL_PHASES + ["restore"]),
+        ("restored", FULL_INSTALL_PHASES),
+    ],
+)
+def test_load_manifest_rejects_phase_order_or_state_mismatch(
+    tmp_path, state, phases
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="phase-state-{}".format(state),
+    )
+    make_installed_files(citysample_root)
+    manifest = mark_installed(manifest_path, citysample_root)
+    manifest["state"] = state
+    manifest["completed_phases"] = phases
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(IntegrationError, match="completed phases"):
+        load_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("state", "phases"),
+    [
+        ("restoring", FULL_INSTALL_PHASES),
+        ("restoring", ["backup", "source"]),
+        ("restored", ["backup", "restore"]),
+        ("failed", ["backup", "source", "build"]),
+        ("failed", ["backup", "source", "build", "restore"]),
+        ("failed", FULL_INSTALL_PHASES),
+        ("failed", FULL_INSTALL_PHASES + ["restore"]),
+    ],
+)
+def test_load_manifest_accepts_real_restore_and_failure_sequences(
+    tmp_path, state, phases
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    manifest_path = create_manifest(
+        citysample_root,
+        tmp_path / "Argus",
+        tmp_path / "UE",
+        stamp="valid-phase-{}-{}".format(state, len(phases)),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state"] = state
+    manifest["completed_phases"] = phases
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert load_manifest(manifest_path)[1]["state"] == state
 
 
 def test_load_manifest_requires_installed_hashes_for_installed_state(tmp_path):
@@ -823,6 +988,7 @@ def test_restore_manifest_restores_existing_and_removes_created_file(tmp_path):
         path = citysample_root / row["path"]
         row["installed_sha256"] = sha256_file(path) if path.exists() else None
     manifest["state"] = "installed"
+    manifest["completed_phases"] = FULL_INSTALL_PHASES.copy()
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     restore_manifest(manifest_path)
@@ -832,9 +998,68 @@ def test_restore_manifest_restores_existing_and_removes_created_file(tmp_path):
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "restored"
 
 
+def test_restore_integration_finalizes_only_after_successful_build(
+    tmp_path, monkeypatch
+):
+    manifest_path = make_installed_integration(tmp_path)
+    states_during_build = []
+
+    def fake_run(command):
+        states_during_build.append(load_manifest(manifest_path)[1]["state"])
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fake_run)
+
+    assert restore_integration(manifest_path) == manifest_path
+    _, manifest = load_manifest(manifest_path)
+    assert states_during_build == ["restoring"]
+    assert manifest["state"] == "restored"
+    assert manifest["completed_phases"] == FULL_INSTALL_PHASES + ["restore"]
+
+
+def test_restore_integration_build_failure_never_records_restored(
+    tmp_path, monkeypatch
+):
+    manifest_path = make_installed_integration(tmp_path)
+
+    def fail_build(command):
+        assert load_manifest(manifest_path)[1]["state"] == "restoring"
+        raise IntegrationError("rebuild failed")
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fail_build)
+
+    with pytest.raises(IntegrationError, match="rebuild failed"):
+        restore_integration(manifest_path)
+
+    _, manifest = load_manifest(manifest_path)
+    assert manifest["state"] == "failed"
+    assert "restore" not in manifest["completed_phases"]
+
+
+def test_restore_integration_interrupt_leaves_restoring(tmp_path, monkeypatch):
+    manifest_path = make_installed_integration(tmp_path)
+
+    def interrupt_build(command):
+        assert load_manifest(manifest_path)[1]["state"] == "restoring"
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._run", interrupt_build
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        restore_integration(manifest_path)
+
+    _, manifest = load_manifest(manifest_path)
+    assert manifest["state"] == "restoring"
+    assert "restore" not in manifest["completed_phases"]
+
+
 def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
     assert _tasklist_has_unreal_editor(
         '"UNREALEDITOR.EXE","52508","Console","1","2,048 K"'
+    )
+    assert _tasklist_has_unreal_editor(
+        '"unrealeditor-CMD.exe","52509","Console","1","2,048 K"'
     )
     assert not _tasklist_has_unreal_editor(
         "INFO: No tasks are running which match the specified criteria."
@@ -857,7 +1082,7 @@ def test_build_command_uses_parameterized_roots(tmp_path):
     ]
 
 
-def test_asset_command_quotes_script_mode_and_result(tmp_path):
+def test_asset_command_survives_windows_and_ue_command_line_reconstruction(tmp_path):
     ue_root = tmp_path / "UE Root"
     citysample_root = tmp_path / "CitySample Root"
     argus_root = tmp_path / "Argus Root"
@@ -867,16 +1092,20 @@ def test_asset_command_quotes_script_mode_and_result(tmp_path):
         ue_root, citysample_root, argus_root, "verify", result_path
     )
 
-    assert command == [
+    assert command[:2] == [
         str(ue_root / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"),
         str(citysample_root / "CitySample.uproject"),
-        '-ExecutePythonScript="{} verify --result \\"{}\\""'.format(
-            (argus_root / "scripts/citysample_argus_assets.py").as_posix(),
-            result_path.as_posix(),
-        ),
-        "-unattended",
-        "-nop4",
     ]
+    assert command[-2:] == ["-unattended", "-nop4"]
+    reconstructed = reconstruct_ue_windows_command(command)
+    execute = reconstructed[reconstructed.index("-ExecutePythonScript=") :].split(
+        " -unattended", 1
+    )[0]
+    assert execute == '-ExecutePythonScript="{} verify --result \\"{}\\""'.format(
+        (argus_root / "scripts/citysample_argus_assets.py").as_posix(),
+        result_path.as_posix(),
+    )
+    assert not execute.startswith('-ExecutePythonScript=""')
 
 
 @pytest.mark.parametrize("payload", [b"not json", b"\xff"])
@@ -888,6 +1117,33 @@ def test_asset_result_rejects_invalid_json_as_integration_error(tmp_path, payloa
         _require_asset_result(result_path)
 
 
+def test_run_assets_uses_unique_result_paths_and_cleans_them(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "backup/manifest.json"
+    manifest_path.parent.mkdir()
+    result_paths = []
+
+    def fake_run(command):
+        result_path = asset_result_path(command)
+        assert not result_path.exists()
+        result_paths.append(result_path)
+        result_path.write_text('{"ok": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fake_run)
+
+    for _ in range(2):
+        assert _run_assets(
+            tmp_path / "Argus",
+            tmp_path / "CitySample",
+            tmp_path / "UE",
+            "verify",
+            manifest_path,
+        ) == {"ok": True}
+
+    assert result_paths[0] != result_paths[1]
+    assert all(path.parent == manifest_path.parent for path in result_paths)
+    assert not any(path.exists() for path in result_paths)
+
+
 @pytest.mark.parametrize(
     ("completed", "message"),
     [
@@ -897,7 +1153,14 @@ def test_asset_result_rejects_invalid_json_as_integration_error(tmp_path, payloa
                 returncode=0,
                 stdout='"UnrealEditor.exe","52508","Console","1","2,048 K"',
             ),
-            "close UnrealEditor.exe",
+            "close UnrealEditor",
+        ),
+        (
+            SimpleNamespace(
+                returncode=0,
+                stdout='"UnrealEditor-Cmd.exe","52509","Console","1","2,048 K"',
+            ),
+            "close UnrealEditor",
         ),
     ],
 )
@@ -919,14 +1182,7 @@ def test_require_editor_closed_rejects_check_failure_or_running_editor(
 
     assert calls == [
         (
-            [
-                "tasklist",
-                "/FI",
-                "IMAGENAME eq UnrealEditor.exe",
-                "/FO",
-                "CSV",
-                "/NH",
-            ],
+            ["tasklist", "/FO", "CSV", "/NH"],
             {"check": False, "capture_output": True, "text": True},
         )
     ]
@@ -983,16 +1239,12 @@ def test_adopt_install_builds_and_verifies_without_rewriting_sources(
     )
 
     assert read_source_files(citysample_root) == expected_sources
-    assert calls == [
-        build_command(ue_root, citysample_root),
-        asset_command(
-            ue_root,
-            citysample_root,
-            argus_root,
-            "verify",
-            manifest_path.parent / "asset_result.json",
-        ),
-    ]
+    assert len(calls) == 2
+    assert calls[0] == build_command(ue_root, citysample_root)
+    assert " verify " in calls[1][2]
+    result_path = asset_result_path(calls[1])
+    assert result_path.parent == manifest_path.parent
+    assert not result_path.exists()
     _, manifest = load_manifest(manifest_path)
     assert manifest["state"] == "installed"
     assert manifest["completed_phases"] == [
@@ -1133,14 +1385,47 @@ def test_fresh_install_rolls_back_and_records_completed_stages_on_asset_failure(
         "build",
         "restore",
     ]
-    assert calls == [
-        build_command(ue_root, citysample_root),
-        asset_command(
-            ue_root,
-            citysample_root,
+    assert len(calls) == 3
+    assert calls[0] == calls[2] == build_command(ue_root, citysample_root)
+    assert " install " in calls[1][2]
+    result_path = asset_result_path(calls[1])
+    assert result_path.parent == manifest_path.parent
+    assert not result_path.exists()
+
+
+def test_install_re_raises_original_when_rollback_and_recording_fail(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = IntegrationError("original asset failure")
+
+    def fail_rollback(*args, **kwargs):
+        raise IntegrationError("rollback failed")
+
+    def fail_record(*args, **kwargs):
+        raise IntegrationError("manifest recording failed")
+
+    def fake_run(command):
+        if any(part.startswith("-ExecutePythonScript=") for part in command):
+            monkeypatch.setattr(
+                "scripts.citysample_argus_integration.restore_manifest",
+                fail_rollback,
+            )
+            monkeypatch.setattr(
+                "scripts.citysample_argus_integration.load_manifest", fail_record
+            )
+            raise original
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fake_run)
+
+    with pytest.raises(IntegrationError) as caught:
+        install_integration(
             argus_root,
-            "install",
-            manifest_path.parent / "asset_result.json",
-        ),
-        build_command(ue_root, citysample_root),
-    ]
+            citysample_root,
+            ue_root,
+            commit="abc123",
+            stamp="preserve-original",
+        )
+
+    assert caught.value is original

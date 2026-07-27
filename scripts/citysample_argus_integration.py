@@ -28,7 +28,8 @@ ACTION_REL = Path("Content/Input/PhotoMode/IA_PM_ArgusCapture.uasset")
 
 EXISTING_FILES = (HEADER_REL, SOURCE_REL, BUILD_REL, MAPPING_REL, BLUEPRINT_REL)
 MANAGED_FILES = EXISTING_FILES + (ACTION_REL,)
-MANIFEST_PHASES = {"backup", "source", "build", "assets", "verify", "restore"}
+INSTALL_PHASES = ("backup", "source", "build", "assets", "verify")
+MANIFEST_PHASES = set(INSTALL_PHASES) | {"restore"}
 LEGACY_BACKUP_PATHS = {
     HEADER_REL: Path("Source/PhotoModeComponent.h"),
     SOURCE_REL: Path("Source/PhotoModeComponent.cpp"),
@@ -266,6 +267,20 @@ def _validate_manifest(path, data):
         or not set(phases) <= MANIFEST_PHASES
     ):
         invalid("completed phases")
+    restored = phases[-1] == "restore"
+    install_phases = phases[:-1] if restored else phases
+    valid_prefix = install_phases == list(INSTALL_PHASES[: len(install_phases)])
+    valid_for_state = {
+        "installing": valid_prefix
+        and not restored
+        and len(install_phases) < len(INSTALL_PHASES),
+        "installed": install_phases == list(INSTALL_PHASES) and not restored,
+        "restoring": valid_prefix and not restored,
+        "restored": valid_prefix and restored,
+        "failed": valid_prefix,
+    }[state]
+    if not valid_for_state:
+        invalid("completed phases")
     roots = data.get("roots")
     if not isinstance(roots, dict) or set(roots) != {"argus", "citysample", "ue"}:
         invalid("roots")
@@ -347,8 +362,13 @@ def _validate_manifest(path, data):
 
 
 def load_manifest(manifest_path):
-    path = Path(manifest_path).resolve()
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        path = Path(manifest_path).resolve()
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise IntegrationError(
+            "invalid manifest: cannot read {}".format(manifest_path)
+        ) from exc
     _validate_manifest(path, data)
     return path, data
 
@@ -377,7 +397,16 @@ def _preflight_restore(manifest_path, manifest):
             raise IntegrationError("backup hash mismatch: {}".format(row["path"]))
 
 
-def restore_manifest(manifest_path, check_drift=True):
+def _finalize_restore(manifest_path):
+    manifest_path, manifest = load_manifest(manifest_path)
+    manifest["state"] = "restored"
+    if "restore" not in manifest["completed_phases"]:
+        manifest["completed_phases"].append("restore")
+    _write_json_atomic(manifest_path, manifest)
+    return manifest_path
+
+
+def restore_manifest(manifest_path, check_drift=True, finalize=True):
     manifest_path, manifest = load_manifest(manifest_path)
     if check_drift:
         if manifest["state"] != "installed":
@@ -396,10 +425,7 @@ def restore_manifest(manifest_path, check_drift=True):
     action_path = citysample_root / ACTION_REL
     if os.path.lexists(action_path):
         action_path.unlink()
-    manifest["state"] = "restored"
-    manifest["completed_phases"].append("restore")
-    _write_json_atomic(manifest_path, manifest)
-    return manifest_path
+    return _finalize_restore(manifest_path) if finalize else manifest_path
 
 
 def find_manifest(argus_root, citysample_root, ue_root, explicit=None):
@@ -413,7 +439,10 @@ def find_manifest(argus_root, citysample_root, ue_root, explicit=None):
     matches = []
     backup_root = roots["citysample"] / "ArgusBackups/argus_integration"
     for path in backup_root.glob("*/manifest.json"):
-        _, data = load_manifest(path)
+        try:
+            _, data = load_manifest(path)
+        except IntegrationError:
+            continue
         manifest_roots = {
             name: Path(data["roots"][name]).resolve() for name in roots
         }
@@ -621,7 +650,7 @@ def asset_command(ue_root, citysample_root, argus_root, mode, result_path):
     editor = Path(ue_root) / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
     project = Path(citysample_root) / "CitySample.uproject"
     script = Path(argus_root) / "scripts/citysample_argus_assets.py"
-    execute = '-ExecutePythonScript="{} {} --result \\"{}\\""'.format(
+    execute = '-ExecutePythonScript={} {} --result \\"{}\\"'.format(
         script.as_posix(), mode, Path(result_path).as_posix()
     )
     return [str(editor), str(project), execute, "-unattended", "-nop4"]
@@ -638,31 +667,25 @@ def _run(command):
 
 
 def _tasklist_has_unreal_editor(output):
+    names = {'"unrealeditor.exe"', '"unrealeditor-cmd.exe"'}
     return any(
-        line.lstrip().casefold().startswith('"unrealeditor.exe",')
+        line.lstrip().casefold().split(",", 1)[0] in names
         for line in output.splitlines()
     )
 
 
 def require_editor_closed():
     completed = subprocess.run(
-        [
-            "tasklist",
-            "/FI",
-            "IMAGENAME eq UnrealEditor.exe",
-            "/FO",
-            "CSV",
-            "/NH",
-        ],
+        ["tasklist", "/FO", "CSV", "/NH"],
         check=False,
         capture_output=True,
         text=True,
     )
     if completed.returncode:
-        raise IntegrationError("tasklist failed while checking UnrealEditor.exe")
+        raise IntegrationError("tasklist failed while checking UnrealEditor processes")
     if _tasklist_has_unreal_editor(completed.stdout):
         raise IntegrationError(
-            "close UnrealEditor.exe before running integration commands"
+            "close UnrealEditor.exe and UnrealEditor-Cmd.exe before running integration commands"
         )
 
 
@@ -719,10 +742,13 @@ def _complete_phase(manifest_path, phase):
 
 
 def _run_assets(argus_root, citysample_root, ue_root, mode, manifest_path):
-    result_path = Path(manifest_path).parent / "asset_result.json"
-    result_path.unlink(missing_ok=True)
-    _run(asset_command(ue_root, citysample_root, argus_root, mode, result_path))
-    return _require_asset_result(result_path)
+    result_path = _temporary_path(Path(manifest_path).parent / "asset_result.json")
+    result_path.unlink()
+    try:
+        _run(asset_command(ue_root, citysample_root, argus_root, mode, result_path))
+        return _require_asset_result(result_path)
+    finally:
+        result_path.unlink(missing_ok=True)
 
 
 def _record_installed_hashes(manifest_path):
@@ -838,14 +864,17 @@ def install_integration(
                 _run(build_command(ue_root, citysample_root))
             except Exception as rollback_exc:
                 rollback_error = str(rollback_exc)
-        manifest_path, manifest = load_manifest(manifest_path)
-        manifest["state"] = "failed"
-        manifest["error"] = str(exc)
-        if not installed:
-            manifest["rollback_completed"] = rollback_error is None
-        if rollback_error is not None:
-            manifest["rollback_error"] = rollback_error
-        _write_json_atomic(manifest_path, manifest)
+        try:
+            manifest_path, manifest = load_manifest(manifest_path)
+            manifest["state"] = "failed"
+            manifest["error"] = str(exc)
+            if not installed:
+                manifest["rollback_completed"] = rollback_error is None
+            if rollback_error is not None:
+                manifest["rollback_error"] = rollback_error
+            _write_json_atomic(manifest_path, manifest)
+        except Exception:
+            pass
         raise
 
 
@@ -855,7 +884,7 @@ def restore_integration(manifest_path):
         raise IntegrationError("manifest is not installed")
     ue_root = Path(manifest["roots"]["ue"])
     citysample_root = Path(manifest["roots"]["citysample"])
-    restore_manifest(manifest_path)
+    restore_manifest(manifest_path, finalize=False)
     try:
         _run(build_command(ue_root, citysample_root))
     except Exception as exc:
@@ -864,7 +893,7 @@ def restore_integration(manifest_path):
         manifest["error"] = str(exc)
         _write_json_atomic(manifest_path, manifest)
         raise
-    return manifest_path
+    return _finalize_restore(manifest_path)
 
 
 def _parser():
