@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,15 +19,23 @@ from scripts.citysample_argus_integration import (
     MANAGED_FILES,
     MAPPING_REL,
     SOURCE_REL,
+    _require_asset_result,
+    _tasklist_has_unreal_editor,
+    asset_command,
+    build_command,
     create_manifest,
     expected_source_fragments,
     find_manifest,
+    install_integration,
     load_manifest,
+    main,
     patch_source_texts,
     read_source_files,
+    require_editor_closed,
     restore_manifest,
     sha256_file,
     verify_source_texts,
+    verify_integration,
     write_source_files,
 )
 
@@ -84,6 +93,23 @@ def make_legacy_backup(root, citysample_root):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(citysample_root / relative, destination)
     return root
+
+
+def make_tool_roots(tmp_path, citysample_root):
+    argus_root = tmp_path / "Argus"
+    asset_script = argus_root / "scripts/citysample_argus_assets.py"
+    asset_script.parent.mkdir(parents=True)
+    asset_script.write_text("# test asset script\n", encoding="utf-8")
+
+    ue_root = tmp_path / "UE"
+    build = ue_root / "Engine/Build/BatchFiles/Build.bat"
+    editor = ue_root / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+    build.parent.mkdir(parents=True)
+    editor.parent.mkdir(parents=True)
+    build.write_text("@exit /b 0\n", encoding="utf-8")
+    editor.write_bytes(b"")
+    (citysample_root / "CitySample.uproject").write_text("{}\n", encoding="utf-8")
+    return argus_root, ue_root
 
 
 def mark_installed(manifest_path, citysample_root):
@@ -804,3 +830,317 @@ def test_restore_manifest_restores_existing_and_removes_created_file(tmp_path):
     assert (citysample_root / HEADER_REL).read_bytes() == original_header
     assert not action_path.exists()
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "restored"
+
+
+def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
+    assert _tasklist_has_unreal_editor(
+        '"UNREALEDITOR.EXE","52508","Console","1","2,048 K"'
+    )
+    assert not _tasklist_has_unreal_editor(
+        "INFO: No tasks are running which match the specified criteria."
+    )
+    assert not _tasklist_has_unreal_editor("信息: 没有运行的任务与指定标准匹配。")
+
+
+def test_build_command_uses_parameterized_roots(tmp_path):
+    ue_root = tmp_path / "UE"
+    citysample_root = tmp_path / "CitySample"
+
+    assert build_command(ue_root, citysample_root) == [
+        str(ue_root / "Engine/Build/BatchFiles/Build.bat"),
+        "CitySampleEditor",
+        "Win64",
+        "Development",
+        "-Project={}".format(citysample_root / "CitySample.uproject"),
+        "-WaitMutex",
+        "-FromMsBuild",
+    ]
+
+
+def test_asset_command_quotes_script_mode_and_result(tmp_path):
+    ue_root = tmp_path / "UE Root"
+    citysample_root = tmp_path / "CitySample Root"
+    argus_root = tmp_path / "Argus Root"
+    result_path = tmp_path / "Result Root/result.json"
+
+    command = asset_command(
+        ue_root, citysample_root, argus_root, "verify", result_path
+    )
+
+    assert command == [
+        str(ue_root / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"),
+        str(citysample_root / "CitySample.uproject"),
+        '-ExecutePythonScript="{} verify --result \\"{}\\""'.format(
+            (argus_root / "scripts/citysample_argus_assets.py").as_posix(),
+            result_path.as_posix(),
+        ),
+        "-unattended",
+        "-nop4",
+    ]
+
+
+@pytest.mark.parametrize("payload", [b"not json", b"\xff"])
+def test_asset_result_rejects_invalid_json_as_integration_error(tmp_path, payload):
+    result_path = tmp_path / "asset_result.json"
+    result_path.write_bytes(payload)
+
+    with pytest.raises(IntegrationError, match="invalid"):
+        _require_asset_result(result_path)
+
+
+@pytest.mark.parametrize(
+    ("completed", "message"),
+    [
+        (SimpleNamespace(returncode=1, stdout=""), "tasklist failed"),
+        (
+            SimpleNamespace(
+                returncode=0,
+                stdout='"UnrealEditor.exe","52508","Console","1","2,048 K"',
+            ),
+            "close UnrealEditor.exe",
+        ),
+    ],
+)
+def test_require_editor_closed_rejects_check_failure_or_running_editor(
+    monkeypatch, completed, message
+):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return completed
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.subprocess.run", fake_run
+    )
+
+    with pytest.raises(IntegrationError, match=message):
+        require_editor_closed()
+
+    assert calls == [
+        (
+            [
+                "tasklist",
+                "/FI",
+                "IMAGENAME eq UnrealEditor.exe",
+                "/FO",
+                "CSV",
+                "/NH",
+            ],
+            {"check": False, "capture_output": True, "text": True},
+        )
+    ]
+
+
+def test_main_checks_editor_before_starting_integration(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.require_editor_closed",
+        lambda: (_ for _ in ()).throw(IntegrationError("editor open")),
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.install_integration",
+        lambda *args, **kwargs: pytest.fail("integration started"),
+    )
+
+    with pytest.raises(IntegrationError, match="editor open"):
+        main(["install"])
+
+
+def test_adopt_install_builds_and_verifies_without_rewriting_sources(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = read_source_files(citysample_root)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+    patched = patch_source_texts(
+        original[0][0], original[1][0], original[2][0], argus_root
+    )
+    write_source_files(citysample_root, patched, original)
+    expected_sources = tuple(
+        (text, format_[1], format_[2])
+        for text, format_ in zip(patched, original)
+    )
+    action = citysample_root / ACTION_REL
+    action.parent.mkdir(parents=True, exist_ok=True)
+    action.write_bytes(b"action")
+    calls = []
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._run", calls.append
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._require_asset_result",
+        lambda path: {"ok": True},
+    )
+
+    manifest_path = install_integration(
+        argus_root,
+        citysample_root,
+        ue_root,
+        adopt_backup=legacy,
+        commit="abc123",
+        stamp="20260725_010203",
+    )
+
+    assert read_source_files(citysample_root) == expected_sources
+    assert calls == [
+        build_command(ue_root, citysample_root),
+        asset_command(
+            ue_root,
+            citysample_root,
+            argus_root,
+            "verify",
+            manifest_path.parent / "asset_result.json",
+        ),
+    ]
+    _, manifest = load_manifest(manifest_path)
+    assert manifest["state"] == "installed"
+    assert manifest["completed_phases"] == [
+        "backup",
+        "source",
+        "build",
+        "assets",
+        "verify",
+    ]
+    assert len(manifest["completed_phases"]) == len(
+        set(manifest["completed_phases"])
+    )
+    assert all(len(row["installed_sha256"]) == 64 for row in manifest["files"])
+
+
+def test_existing_install_without_adoption_runs_explicit_verify(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = read_source_files(citysample_root)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+    patched = patch_source_texts(
+        original[0][0], original[1][0], original[2][0], argus_root
+    )
+    write_source_files(citysample_root, patched, original)
+    action = citysample_root / ACTION_REL
+    action.parent.mkdir(parents=True, exist_ok=True)
+    action.write_bytes(b"action")
+    manifest_path = create_manifest(
+        citysample_root,
+        argus_root,
+        ue_root,
+        adopt_backup=legacy,
+        commit="abc123",
+        stamp="installed",
+    )
+    mark_installed(manifest_path, citysample_root)
+    calls = []
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._run", calls.append
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._require_asset_result",
+        lambda path: {"ok": True},
+    )
+
+    assert install_integration(argus_root, citysample_root, ue_root) == manifest_path
+    assert len(calls) == 1
+    assert " verify " in calls[0][2]
+
+
+def test_install_rejects_partial_source_before_backup_or_process(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = read_source_files(citysample_root)
+    patched = patch_source_texts(
+        original[0][0], original[1][0], original[2][0], argus_root
+    )
+    write_source_files(
+        citysample_root,
+        (patched[0], original[1][0], original[2][0]),
+        original,
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._run",
+        lambda command: pytest.fail("process started"),
+    )
+
+    with pytest.raises(IntegrationError, match="partial or conflicting"):
+        install_integration(argus_root, citysample_root, ue_root, commit="abc123")
+
+    assert not (citysample_root / "ArgusBackups/argus_integration").exists()
+
+
+def test_clean_install_rejects_adopt_backup_before_creating_manifest(tmp_path):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    legacy = make_legacy_backup(tmp_path / "legacy", citysample_root)
+
+    with pytest.raises(IntegrationError, match="required only"):
+        install_integration(
+            argus_root,
+            citysample_root,
+            ue_root,
+            adopt_backup=legacy,
+            commit="abc123",
+        )
+
+    assert not (citysample_root / "ArgusBackups/argus_integration").exists()
+
+
+def test_fresh_install_rolls_back_and_records_completed_stages_on_asset_failure(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    original = {
+        relative: (citysample_root / relative).read_bytes()
+        for relative in EXISTING_FILES
+    }
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        if any(part.startswith("-ExecutePythonScript=") for part in command):
+            raise IntegrationError("asset stage failed")
+
+    monkeypatch.setattr("scripts.citysample_argus_integration._run", fake_run)
+
+    with pytest.raises(IntegrationError, match="asset stage failed"):
+        install_integration(
+            argus_root,
+            citysample_root,
+            ue_root,
+            commit="abc123",
+            stamp="20260725_010203",
+        )
+
+    assert {
+        relative: (citysample_root / relative).read_bytes()
+        for relative in EXISTING_FILES
+    } == original
+    assert not (citysample_root / ACTION_REL).exists()
+    manifest_path = (
+        citysample_root
+        / "ArgusBackups/argus_integration/20260725_010203/manifest.json"
+    )
+    _, manifest = load_manifest(manifest_path)
+    assert manifest["state"] == "failed"
+    assert manifest["error"] == "asset stage failed"
+    assert manifest["rollback_completed"] is True
+    assert manifest["completed_phases"] == [
+        "backup",
+        "source",
+        "build",
+        "restore",
+    ]
+    assert calls == [
+        build_command(ue_root, citysample_root),
+        asset_command(
+            ue_root,
+            citysample_root,
+            argus_root,
+            "install",
+            manifest_path.parent / "asset_result.json",
+        ),
+        build_command(ue_root, citysample_root),
+    ]

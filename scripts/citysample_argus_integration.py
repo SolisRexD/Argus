@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import codecs
 import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -600,3 +603,312 @@ def verify_source_texts(header, source, build, argus_root):
             if not _is_installed_once(texts[name], anchor, addition, marker):
                 raise IntegrationError("{} source contract is not installed".format(name))
     return True
+
+
+def build_command(ue_root, citysample_root):
+    return [
+        str(Path(ue_root) / "Engine/Build/BatchFiles/Build.bat"),
+        "CitySampleEditor",
+        "Win64",
+        "Development",
+        "-Project={}".format(Path(citysample_root) / "CitySample.uproject"),
+        "-WaitMutex",
+        "-FromMsBuild",
+    ]
+
+
+def asset_command(ue_root, citysample_root, argus_root, mode, result_path):
+    editor = Path(ue_root) / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+    project = Path(citysample_root) / "CitySample.uproject"
+    script = Path(argus_root) / "scripts/citysample_argus_assets.py"
+    execute = '-ExecutePythonScript="{} {} --result \\"{}\\""'.format(
+        script.as_posix(), mode, Path(result_path).as_posix()
+    )
+    return [str(editor), str(project), execute, "-unattended", "-nop4"]
+
+
+def _run(command):
+    completed = subprocess.run(command, check=False)
+    if completed.returncode:
+        raise IntegrationError(
+            "command failed with exit code {}: {}".format(
+                completed.returncode, subprocess.list2cmdline(command)
+            )
+        )
+
+
+def _tasklist_has_unreal_editor(output):
+    return any(
+        line.lstrip().casefold().startswith('"unrealeditor.exe",')
+        for line in output.splitlines()
+    )
+
+
+def require_editor_closed():
+    completed = subprocess.run(
+        [
+            "tasklist",
+            "/FI",
+            "IMAGENAME eq UnrealEditor.exe",
+            "/FO",
+            "CSV",
+            "/NH",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode:
+        raise IntegrationError("tasklist failed while checking UnrealEditor.exe")
+    if _tasklist_has_unreal_editor(completed.stdout):
+        raise IntegrationError(
+            "close UnrealEditor.exe before running integration commands"
+        )
+
+
+def _require_asset_result(result_path):
+    path = Path(result_path)
+    if not path.is_file():
+        raise IntegrationError("UE asset result was not written")
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise IntegrationError("UE asset result is invalid: {}".format(exc))
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise IntegrationError("UE asset verification failed")
+    return result
+
+
+def _git_commit(argus_root):
+    command = ["git", "rev-parse", "HEAD"]
+    completed = subprocess.run(
+        command,
+        cwd=Path(argus_root),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode:
+        raise IntegrationError(
+            "command failed with exit code {}: {}".format(
+                completed.returncode, subprocess.list2cmdline(command)
+            )
+        )
+    return completed.stdout.strip()
+
+
+def validate_roots(argus_root, citysample_root, ue_root):
+    required = (
+        Path(argus_root) / "scripts/citysample_argus_assets.py",
+        Path(citysample_root) / "CitySample.uproject",
+        Path(ue_root) / "Engine/Build/BatchFiles/Build.bat",
+        Path(ue_root) / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
+    ) + tuple(Path(citysample_root) / relative for relative in EXISTING_FILES)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise IntegrationError("required file is missing: {}".format(", ".join(missing)))
+
+
+def _complete_phase(manifest_path, phase):
+    if phase not in MANIFEST_PHASES:
+        raise IntegrationError("unsupported manifest phase: {}".format(phase))
+    manifest_path, manifest = load_manifest(manifest_path)
+    if phase not in manifest["completed_phases"]:
+        manifest["completed_phases"].append(phase)
+        _write_json_atomic(manifest_path, manifest)
+
+
+def _run_assets(argus_root, citysample_root, ue_root, mode, manifest_path):
+    result_path = Path(manifest_path).parent / "asset_result.json"
+    result_path.unlink(missing_ok=True)
+    _run(asset_command(ue_root, citysample_root, argus_root, mode, result_path))
+    return _require_asset_result(result_path)
+
+
+def _record_installed_hashes(manifest_path):
+    manifest_path, manifest = load_manifest(manifest_path)
+    citysample_root = Path(manifest["roots"]["citysample"])
+    formats = read_source_files(citysample_root)
+    verify_source_texts(
+        formats[0][0],
+        formats[1][0],
+        formats[2][0],
+        Path(manifest["roots"]["argus"]),
+    )
+    for row in manifest["files"]:
+        path = citysample_root / row["path"]
+        if not path.is_file():
+            raise IntegrationError("installed file is missing: {}".format(row["path"]))
+        row["installed_sha256"] = sha256_file(path)
+    if "verify" not in manifest["completed_phases"]:
+        manifest["completed_phases"].append("verify")
+    manifest["state"] = "installed"
+    _write_json_atomic(manifest_path, manifest)
+    load_manifest(manifest_path)
+    return manifest_path
+
+
+def _verify_host(manifest_path):
+    manifest_path, manifest = load_manifest(manifest_path)
+    if manifest["state"] != "installed":
+        raise IntegrationError("manifest is not installed")
+    _check_installed_hashes(manifest_path, manifest)
+    citysample_root = Path(manifest["roots"]["citysample"])
+    formats = read_source_files(citysample_root)
+    verify_source_texts(
+        formats[0][0],
+        formats[1][0],
+        formats[2][0],
+        Path(manifest["roots"]["argus"]),
+    )
+    return manifest_path, manifest
+
+
+def verify_integration(manifest_path):
+    manifest_path, manifest = _verify_host(manifest_path)
+    _run_assets(
+        Path(manifest["roots"]["argus"]),
+        Path(manifest["roots"]["citysample"]),
+        Path(manifest["roots"]["ue"]),
+        "verify",
+        manifest_path,
+    )
+    return manifest_path
+
+
+def install_integration(
+    argus_root,
+    citysample_root,
+    ue_root,
+    adopt_backup=None,
+    commit=None,
+    stamp=None,
+):
+    argus_root = Path(argus_root).resolve()
+    citysample_root = Path(citysample_root).resolve()
+    ue_root = Path(ue_root).resolve()
+    validate_roots(argus_root, citysample_root, ue_root)
+    formats = read_source_files(citysample_root)
+    texts = tuple(format_[0] for format_ in formats)
+    try:
+        verify_source_texts(*texts, argus_root)
+        installed = True
+        patched = texts
+    except IntegrationError:
+        patched = patch_source_texts(*texts, argus_root)
+        installed = False
+
+    if installed and adopt_backup is None:
+        return verify_integration(
+            find_manifest(argus_root, citysample_root, ue_root)
+        )
+    if installed != (adopt_backup is not None):
+        raise IntegrationError(
+            "--adopt-backup is required only for an existing installation"
+        )
+
+    manifest_path = create_manifest(
+        citysample_root,
+        argus_root,
+        ue_root,
+        adopt_backup=adopt_backup,
+        commit=commit or _git_commit(argus_root),
+        stamp=stamp,
+    )
+    try:
+        if not installed:
+            write_source_files(citysample_root, patched, formats)
+        _complete_phase(manifest_path, "source")
+        _run(build_command(ue_root, citysample_root))
+        _complete_phase(manifest_path, "build")
+        _run_assets(
+            argus_root,
+            citysample_root,
+            ue_root,
+            "verify" if installed else "install",
+            manifest_path,
+        )
+        _complete_phase(manifest_path, "assets")
+        return _record_installed_hashes(manifest_path)
+    except Exception as exc:
+        rollback_error = None
+        if not installed:
+            try:
+                restore_manifest(manifest_path, check_drift=False)
+                _run(build_command(ue_root, citysample_root))
+            except Exception as rollback_exc:
+                rollback_error = str(rollback_exc)
+        manifest_path, manifest = load_manifest(manifest_path)
+        manifest["state"] = "failed"
+        manifest["error"] = str(exc)
+        if not installed:
+            manifest["rollback_completed"] = rollback_error is None
+        if rollback_error is not None:
+            manifest["rollback_error"] = rollback_error
+        _write_json_atomic(manifest_path, manifest)
+        raise
+
+
+def restore_integration(manifest_path):
+    manifest_path, manifest = load_manifest(manifest_path)
+    if manifest["state"] != "installed":
+        raise IntegrationError("manifest is not installed")
+    ue_root = Path(manifest["roots"]["ue"])
+    citysample_root = Path(manifest["roots"]["citysample"])
+    restore_manifest(manifest_path)
+    try:
+        _run(build_command(ue_root, citysample_root))
+    except Exception as exc:
+        manifest_path, manifest = load_manifest(manifest_path)
+        manifest["state"] = "failed"
+        manifest["error"] = str(exc)
+        _write_json_atomic(manifest_path, manifest)
+        raise
+    return manifest_path
+
+
+def _parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("install", "verify", "restore"))
+    parser.add_argument("--argus-root", type=Path, default=DEFAULT_ARGUS_ROOT)
+    parser.add_argument(
+        "--citysample-root", type=Path, default=DEFAULT_CITYSAMPLE_ROOT
+    )
+    parser.add_argument("--ue-root", type=Path, default=DEFAULT_UE_ROOT)
+    parser.add_argument("--adopt-backup", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    return parser
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    require_editor_closed()
+    if args.command == "install":
+        result = install_integration(
+            args.argus_root,
+            args.citysample_root,
+            args.ue_root,
+            adopt_backup=args.adopt_backup,
+        )
+    else:
+        manifest_path = find_manifest(
+            args.argus_root,
+            args.citysample_root,
+            args.ue_root,
+            args.manifest,
+        )
+        result = (
+            verify_integration(manifest_path)
+            if args.command == "verify"
+            else restore_integration(manifest_path)
+        )
+    print(result)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except IntegrationError as exc:
+        print("Argus CitySample integration failed: {}".format(exc), file=sys.stderr)
+        raise SystemExit(1)
