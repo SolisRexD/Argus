@@ -15,8 +15,8 @@ class FakeObject:
 
 
 class FakeKey:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, *, key_name):
+        self.name = key_name
 
     def __str__(self):
         return "<Struct 'Key' (...) {}>".format(self.name)
@@ -40,7 +40,7 @@ class FakeMappingData(FakeObject):
 class FakeContext(FakeObject):
     def __init__(self, action, f9_mappings):
         self.current_mappings = [
-            FakeMapping(action, FakeKey("F9")) for _ in range(f9_mappings)
+            FakeMapping(action, FakeKey(key_name="F9")) for _ in range(f9_mappings)
         ]
         self.default_key_mappings = FakeMappingData(self)
         self.unmapped = []
@@ -174,7 +174,7 @@ def test_verify_assets_uses_ue_key_equality(monkeypatch):
     module, fake = import_asset_module(monkeypatch, action_exists=True)
     fake.action.value_type = fake.module.InputActionValueType.BOOLEAN
     mapped_key = fake.context.current_mappings[0].key
-    expected_key = FakeKey("F9")
+    expected_key = FakeKey(key_name="F9")
 
     assert mapped_key != expected_key
     assert fake.module.InputLibrary.equal_equal_key_key(mapped_key, expected_key)
