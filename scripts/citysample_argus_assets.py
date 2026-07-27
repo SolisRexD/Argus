@@ -26,6 +26,10 @@ def _mapping_action(mapping):
     return mapping.get_editor_property("action")
 
 
+def _keys_equal(a, b):
+    return unreal.InputLibrary.equal_equal_key_key(a, b)
+
+
 def _f9_mappings(action, context, key):
     mappings = context.get_editor_property("default_key_mappings").get_editor_property(
         "mappings"
@@ -34,7 +38,7 @@ def _f9_mappings(action, context, key):
         mapping
         for mapping in mappings
         if _mapping_action(mapping) == action
-        and mapping.get_editor_property("key") == key
+        and _keys_equal(mapping.get_editor_property("key"), key)
     ]
 
 

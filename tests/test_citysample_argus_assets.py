@@ -21,9 +21,6 @@ class FakeKey:
     def __str__(self):
         return "<Struct 'Key' (...) {}>".format(self.name)
 
-    def __eq__(self, other):
-        return isinstance(other, FakeKey) and self.name == other.name
-
 
 class FakeMapping(FakeObject):
     def __init__(self, action, key):
@@ -52,7 +49,7 @@ class FakeContext(FakeObject):
     def unmap_key(self, action, key):
         self.unmapped.append((action, key))
         for index, mapping in enumerate(self.current_mappings):
-            if mapping.action is action and mapping.key == key:
+            if mapping.action is action and mapping.key.name == key.name:
                 self.current_mappings.pop(index)
                 break
 
@@ -75,6 +72,9 @@ class FakeUnreal:
 
         module = types.ModuleType("unreal")
         module.InputActionValueType = types.SimpleNamespace(BOOLEAN="Boolean")
+        module.InputLibrary = types.SimpleNamespace(
+            equal_equal_key_key=lambda a, b: a.name == b.name
+        )
         module.Key = FakeKey
         module.get_default_object = lambda blueprint_class: self.default_object
         module.EditorAssetLibrary = types.SimpleNamespace(
@@ -132,8 +132,12 @@ def test_install_assets_creates_action_maps_f9_sets_cdo_and_saves(monkeypatch):
     }
     assert fake.duplicated == [(module.SOURCE_ACTION_PATH, module.ACTION_PATH)]
     assert fake.action.value_type == fake.module.InputActionValueType.BOOLEAN
-    assert fake.context.unmapped == [(fake.action, FakeKey("F9"))]
-    assert fake.context.mapped == [(fake.action, FakeKey("F9"))]
+    assert [(action, key.name) for action, key in fake.context.unmapped] == [
+        (fake.action, "F9")
+    ]
+    assert [(action, key.name) for action, key in fake.context.mapped] == [
+        (fake.action, "F9")
+    ]
     assert len(fake.context.current_mappings) == 1
     assert fake.default_object.capture_action is fake.action
     assert fake.saved == [
@@ -160,15 +164,20 @@ def test_install_assets_removes_every_duplicate_f9_mapping(monkeypatch):
 
     module.install_assets()
 
-    assert fake.context.unmapped == [(fake.action, FakeKey("F9"))] * 3
+    assert [(action, key.name) for action, key in fake.context.unmapped] == [
+        (fake.action, "F9")
+    ] * 3
     assert len(fake.context.current_mappings) == 1
 
 
-def test_verify_assets_compares_reflected_fkey_by_value(monkeypatch):
+def test_verify_assets_uses_ue_key_equality(monkeypatch):
     module, fake = import_asset_module(monkeypatch, action_exists=True)
     fake.action.value_type = fake.module.InputActionValueType.BOOLEAN
+    mapped_key = fake.context.current_mappings[0].key
+    expected_key = FakeKey("F9")
 
-    assert str(fake.context.current_mappings[0].key) != "F9"
+    assert mapped_key != expected_key
+    assert fake.module.InputLibrary.equal_equal_key_key(mapped_key, expected_key)
     assert module.verify_assets()["f9_mappings"] == 1
 
 
