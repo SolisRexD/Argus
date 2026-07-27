@@ -637,16 +637,9 @@ def verify_source_texts(header, source, build, argus_root):
 
 
 def build_command(ue_root, citysample_root):
-    unsafe = '&|<>^()%!"\r\n'
     ue_root = Path(ue_root)
     citysample_root = Path(citysample_root)
-    for label, root in (("UE", ue_root), ("CitySample", citysample_root)):
-        if any(character in str(root) for character in unsafe):
-            raise IntegrationError(
-                "unsafe cmd metacharacter in {} path: {}".format(label, root)
-            )
-
-    return [
+    command = [
         str(ue_root / "Engine/Build/BatchFiles/Build.bat"),
         "CitySampleEditor",
         "Win64",
@@ -655,6 +648,19 @@ def build_command(ue_root, citysample_root):
         "-WaitMutex",
         "-FromMsBuild",
     ]
+    for label, root, argument in (
+        ("UE", ue_root, command[0]),
+        ("CitySample", citysample_root, command[4]),
+    ):
+        if any(character in argument for character in '%!"\r\n') or (
+            any(character in argument for character in "&|<>^()")
+            and not subprocess.list2cmdline([argument]).startswith('"')
+        ):
+            raise IntegrationError(
+                "unsafe cmd metacharacter in {} path: {}".format(label, root)
+            )
+
+    return command
 
 
 def asset_command(ue_root, citysample_root, argus_root, mode, result_path):
@@ -880,6 +886,7 @@ def install_integration(
             "--adopt-backup is required only for an existing installation"
         )
 
+    build = build_command(ue_root, citysample_root)
     manifest_path = create_manifest(
         citysample_root,
         argus_root,
@@ -892,7 +899,7 @@ def install_integration(
         if not installed:
             write_source_files(citysample_root, patched, formats)
         _complete_phase(manifest_path, "source")
-        _run(build_command(ue_root, citysample_root))
+        _run(build)
         _complete_phase(manifest_path, "build")
         _run_assets(
             argus_root,
@@ -910,7 +917,7 @@ def install_integration(
                 restore_manifest(
                     manifest_path, check_drift=False, finalize=False
                 )
-                _run(build_command(ue_root, citysample_root))
+                _run(build)
                 _finalize_restore(manifest_path)
             except Exception as rollback_exc:
                 rollback_error = str(rollback_exc)
@@ -934,9 +941,10 @@ def restore_integration(manifest_path):
         raise IntegrationError("manifest is not installed")
     ue_root = Path(manifest["roots"]["ue"])
     citysample_root = Path(manifest["roots"]["citysample"])
+    build = build_command(ue_root, citysample_root)
     restore_manifest(manifest_path, finalize=False)
     try:
-        _run(build_command(ue_root, citysample_root))
+        _run(build)
     except Exception as exc:
         try:
             manifest_path, manifest = load_manifest(manifest_path)

@@ -1109,6 +1109,24 @@ def test_restore_integration_re_raises_build_error_when_recording_fails(
     assert caught.value is original
 
 
+def test_restore_rejects_unsafe_build_path_before_restoring(tmp_path, monkeypatch):
+    manifest_path = make_installed_integration(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["roots"]["ue"] = str(tmp_path / "UE&unsafe")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    mutations = []
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.restore_manifest",
+        lambda *args, **kwargs: mutations.append("restore_manifest"),
+    )
+
+    with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
+        restore_integration(manifest_path)
+
+    assert mutations == []
+    assert load_manifest(manifest_path)[1]["state"] == "installed"
+
+
 def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
     assert _tasklist_has_unreal_editor(
         '"UNREALEDITOR.EXE","52508","Console","1","2,048 K"'
@@ -1123,8 +1141,8 @@ def test_tasklist_detection_is_case_insensitive_and_ignores_info_text():
 
 
 def test_build_command_uses_parameterized_roots(tmp_path):
-    ue_root = tmp_path / "UE Root's"
-    citysample_root = tmp_path / "CitySample Root's"
+    ue_root = tmp_path / "UE & Root's (x86)"
+    citysample_root = tmp_path / "City & Sample's (Demo)"
 
     assert build_command(ue_root, citysample_root) == [
         str(ue_root / "Engine/Build/BatchFiles/Build.bat"),
@@ -1138,18 +1156,97 @@ def test_build_command_uses_parameterized_roots(tmp_path):
 
 
 @pytest.mark.parametrize("root_name", ["ue_root", "citysample_root"])
-@pytest.mark.parametrize("character", list('&|<>^()%!"\r\n'))
-def test_build_command_rejects_unsafe_cmd_metacharacters_in_roots(
+@pytest.mark.parametrize("character", list('%!"\r\n'))
+def test_build_command_always_rejects_expanding_cmd_metacharacters(
     tmp_path, root_name, character
 ):
     roots = {
-        "ue_root": tmp_path / "UE",
-        "citysample_root": tmp_path / "CitySample",
+        "ue_root": tmp_path / "UE Root",
+        "citysample_root": tmp_path / "CitySample Root",
     }
     roots[root_name] = Path("{}{}unsafe".format(roots[root_name], character))
 
     with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
         build_command(roots["ue_root"], roots["citysample_root"])
+
+
+@pytest.mark.parametrize("root_name", ["ue_root", "citysample_root"])
+@pytest.mark.parametrize("character", list("&|<>^()"))
+def test_build_command_rejects_unquoted_cmd_metacharacters(root_name, character):
+    roots = {
+        "ue_root": Path("C:/UE"),
+        "citysample_root": Path("C:/CitySample"),
+    }
+    roots[root_name] = Path("{}{}unsafe".format(roots[root_name], character))
+
+    with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
+        build_command(roots["ue_root"], roots["citysample_root"])
+
+
+@pytest.mark.parametrize("root_name", ["ue_root", "citysample_root"])
+@pytest.mark.parametrize("character", list("&|<>^()"))
+@pytest.mark.parametrize("whitespace", [" ", "\t"])
+def test_build_command_allows_quoted_cmd_metacharacters(
+    root_name, character, whitespace
+):
+    roots = {
+        "ue_root": Path("C:/UE"),
+        "citysample_root": Path("C:/CitySample"),
+    }
+    roots[root_name] = Path(
+        "{}{}Root{}safe".format(roots[root_name], whitespace, character)
+    )
+
+    command = build_command(roots["ue_root"], roots["citysample_root"])
+
+    checked_argument = command[0] if root_name == "ue_root" else command[4]
+    assert subprocess.list2cmdline([checked_argument]).startswith('"')
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows cmd.exe batch parsing")
+def test_build_command_runs_quoted_cmd_metacharacters_without_injection(tmp_path):
+    ue_root = tmp_path / "UE & Tools (x86)"
+    build_bat = ue_root / "Engine/Build/BatchFiles/Build.bat"
+    build_bat.parent.mkdir(parents=True)
+    received_project = tmp_path / "received-project.txt"
+    injection_marker = tmp_path / "unexpected-command.txt"
+    assert " " not in str(injection_marker)
+    citysample_root = Path(
+        "{} & echo.UNEXPECTED>{} & rem.(Demo)".format(
+            tmp_path / "City", injection_marker
+        )
+    )
+    build_bat.write_bytes(
+        (
+            "@echo off\r\n"
+            'set "project=%~4"\r\n'
+            '> "{}" <nul set /p "=%project%"\r\n'
+            "exit /b 0\r\n".format(received_project)
+        ).encode("utf-8")
+    )
+    raw_project_argument = "-Project={}".format(
+        citysample_root / "CitySample.uproject"
+    )
+    raw_command = [
+        str(build_bat),
+        "CitySampleEditor",
+        "Win64",
+        "Development",
+        raw_project_argument,
+        "-WaitMutex",
+        "-FromMsBuild",
+    ]
+
+    assert subprocess.list2cmdline([raw_command[0]]).startswith('"')
+    assert subprocess.list2cmdline([raw_command[4]]).startswith('"')
+    _run(raw_command)
+    assert received_project.read_text(encoding="utf-8") == raw_project_argument
+    assert not injection_marker.exists()
+
+    received_project.unlink()
+    _run(build_command(ue_root, citysample_root))
+    assert received_project.read_text(encoding="utf-8") == raw_project_argument
+    assert not injection_marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows cmd.exe batch parsing")
@@ -1529,6 +1626,47 @@ def test_clean_install_rejects_adopt_backup_before_creating_manifest(tmp_path):
         )
 
     assert not (citysample_root / "ArgusBackups/argus_integration").exists()
+
+
+def test_install_rejects_unsafe_build_path_before_manifest_or_source_write(
+    tmp_path, monkeypatch
+):
+    citysample_root = make_citysample_tree(tmp_path)
+    argus_root, ue_root = make_tool_roots(tmp_path, citysample_root)
+    unsafe_ue_root = ue_root.with_name("UE&unsafe")
+    ue_root.rename(unsafe_ue_root)
+    mutations = []
+
+    def record_create_manifest(*args, **kwargs):
+        mutations.append("create_manifest")
+        return tmp_path / "manifest.json"
+
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.create_manifest",
+        record_create_manifest,
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.write_source_files",
+        lambda *args, **kwargs: mutations.append("write_source_files"),
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration._complete_phase",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.citysample_argus_integration.restore_manifest",
+        lambda *args, **kwargs: None,
+    )
+
+    with pytest.raises(IntegrationError, match="unsafe cmd metacharacter.*path"):
+        install_integration(
+            argus_root,
+            citysample_root,
+            unsafe_ue_root,
+            commit="abc123",
+        )
+
+    assert mutations == []
 
 
 def test_fresh_install_rolls_back_and_records_completed_stages_on_asset_failure(
