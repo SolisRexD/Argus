@@ -30,7 +30,7 @@ def import_runtime_session(
     execute_error=None,
     execute_error_on=None,
 ):
-    values = {"FastGeo.EnableTransformer": bool(initial_fastgeo)}
+    values = {"FastGeo.EnableTransformer": bool(initial_fastgeo), "CitySample.UseSandboxIntro": True}
     events = []
     worlds = {"game": game_world, "editor": editor_world}
 
@@ -46,7 +46,7 @@ def import_runtime_session(
 
             events.append((world, command))
             name, raw_value = command.split(None, 1)
-            if name == "FastGeo.EnableTransformer":
+            if name in values:
                 values[name] = raw_value.strip() not in ("0", "false", "False")
 
     fake_unreal = types.SimpleNamespace(
@@ -100,6 +100,19 @@ def test_prepare_and_restore_preserve_original_fastgeo_value(monkeypatch, tmp_pa
         ("editor_world", "FastGeo.EnableTransformer 0"),
         ("editor_world", "FastGeo.EnableTransformer 1"),
     ]
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("initial_intro", [True, False])
+def test_citysample_intro_is_restored_to_its_original_value(monkeypatch, tmp_path, initial_intro):
+    controller, values, _, _, state_path = import_runtime_session(monkeypatch, tmp_path)
+    values["CitySample.UseSandboxIntro"] = initial_intro
+    cfg = citysample_config()
+    cfg["runtime"]["citysample"]["disable_sandbox_intro_before_play"] = True
+    controller.prepare_before_play(cfg)
+    assert values["CitySample.UseSandboxIntro"] is False
+    controller.restore_after_play(cfg)
+    assert values["CitySample.UseSandboxIntro"] is initial_intro
     assert not state_path.exists()
 
 

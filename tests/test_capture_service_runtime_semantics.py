@@ -14,7 +14,7 @@ def test_capture_service_passes_pose_to_runtime_semantic_controller():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "apply"
+        and node.func.attr == "apply_incremental"
         and isinstance(node.func.value, ast.Attribute)
         and node.func.value.attr == "semantic_stencil_controller"
     ]

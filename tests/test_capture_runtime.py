@@ -19,9 +19,9 @@ def test_runtime_preparation_is_disabled_by_default():
     assert plan.streaming_timeout_seconds == 120.0
 
 
-def test_project_pipeline_config_prepares_fastgeo_before_play():
+def test_citysample_preset_prepares_fastgeo_before_play():
     root = Path(__file__).resolve().parents[1]
-    cfg = json.loads((root / "config" / "pipeline_config.json").read_text())
+    cfg = json.loads((root / "config" / "pipeline_citysample.json").read_text())
 
     play_plan = build_runtime_play_session_plan(cfg)
     capture_plan = build_runtime_preparation_plan(
@@ -29,13 +29,27 @@ def test_project_pipeline_config_prepares_fastgeo_before_play():
         pose={"x": 1, "y": 2, "z": 3},
     )
 
-    assert play_plan.pre_play_console_commands == ("FastGeo.EnableTransformer 0",)
-    assert play_plan.post_play_console_commands == ("FastGeo.EnableTransformer 1",)
+    assert play_plan.pre_play_console_commands == ("CitySample.UseSandboxIntro 0", "FastGeo.EnableTransformer 0")
+    assert play_plan.post_play_console_commands == ("CitySample.UseSandboxIntro 1", "FastGeo.EnableTransformer 1")
     assert "FastGeo.EnableTransformer 0" not in capture_plan.console_commands
     assert capture_plan.post_capture_console_commands == ()
     assert capture_plan.restore_player_after_capture is False
     assert cfg["runtime"]["auto_semantic_stencil"]["max_components"] == 0
     assert cfg["runtime"]["auto_semantic_stencil"]["component_order"] == "capture_distance"
+
+
+def test_default_pipeline_has_no_citysample_startup_or_streaming_commands():
+    root = Path(__file__).resolve().parents[1]
+    cfg = json.loads((root / "config" / "pipeline_config.json").read_text())
+    play = build_runtime_play_session_plan(cfg)
+    capture = build_runtime_preparation_plan(cfg, pose={"x": 0, "y": 0, "z": 200})
+    assert play.profile == capture.profile == "generic"
+    assert play.pre_play_console_commands == play.post_play_console_commands == ()
+    assert capture.console_commands == capture.post_capture_console_commands == ()
+    assert capture.move_player_to_capture is False
+    assert capture.restore_player_after_capture is True
+    assert "citysample" not in cfg["runtime"]
+    assert cfg["runtime"]["auto_semantic_stencil"]["aliases_csv"] == ""
 
 
 def test_citysample_play_session_plan_can_disable_and_restore_fastgeo():

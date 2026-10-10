@@ -417,3 +417,52 @@ def test_runtime_semantic_stencil_uses_configured_plain_alias_file(monkeypatch, 
     assert stats["changed_by_class"] == {"curb_border": 1, "prop": 1}
     assert median.props["custom_depth_stencil_value"] == 4
     assert parking.props["custom_depth_stencil_value"] == 20
+
+
+def test_roof_mesh_identity_wins_over_paving_material(monkeypatch):
+    module = import_runtime_semantics(monkeypatch)
+    roof = FakeComponent("RoofMesh", "StaticMeshComponent",
+                         mesh=FakeMesh("SM_BLDG_Roof", "/Game/Building/SM_BLDG_Roof"))
+    roof.get_materials = lambda: [FakeMesh("MI_Paving_Slab", "/Game/Materials/MI_Paving_Slab")]
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [FakeActor("Building", "StaticMeshActor", [roof])],
+        log_fn=lambda msg: None, warn_fn=lambda msg: None,
+    )
+    stats = controller.apply({"runtime": {"auto_semantic_stencil": {"enabled": True}}})
+    assert stats["changed_by_class"] == {"building": 1}
+    assert roof.props["custom_depth_stencil_value"] == 5
+
+
+def test_preserved_components_do_not_read_materials_or_rewrite_enabled_depth(monkeypatch):
+    module = import_runtime_semantics(monkeypatch)
+    component = FakeComponent("Roof", "StaticMeshComponent", stencil=5)
+    def unexpected(*args):
+        raise AssertionError("preserved component must not be reclassified or rewritten")
+    component.get_materials = unexpected
+    component.set_editor_property = unexpected
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [FakeActor("Building", "StaticMeshActor", [component])],
+        log_fn=lambda msg: None, warn_fn=lambda msg: None,
+    )
+    stats = controller.apply({"runtime": {"auto_semantic_stencil": {"enabled": True}}})
+    assert stats["preserved"] == 1
+    assert stats["failed"] == 0
+
+
+def test_incremental_annotation_yields_before_scanning_entire_scene(monkeypatch):
+    module = import_runtime_semantics(monkeypatch)
+    components = [FakeComponent("Road", "StaticMeshComponent") for _ in range(5)]
+    controller = module.RuntimeSemanticStencilController(
+        actor_provider=lambda: [FakeActor("Road", "StaticMeshActor", components)],
+        log_fn=lambda msg: None, warn_fn=lambda msg: None,
+    )
+    work = controller.apply_incremental({"runtime": {"auto_semantic_stencil": {
+        "enabled": True, "components_per_tick": 2}}})
+    next(work)
+    assert sum(c.props["custom_depth_stencil_value"] == 2 for c in components) == 2
+    next(work)
+    assert sum(c.props["custom_depth_stencil_value"] == 2 for c in components) == 4
+    import pytest
+    with pytest.raises(StopIteration) as finished:
+        next(work)
+    assert finished.value.value["scanned_components"] == 5

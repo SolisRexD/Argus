@@ -1,6 +1,6 @@
 {
   "assets": {
-    "root": "/Game/Tools/Semantic",
+    "root": "/Game/Argus/CaptureLab/Capture",
     "material_name": "M_PP_SemanticMask_Auto",
     "rt_rgb_name": "RT_RGB",
     "rt_mask_name": "RT_MASK"
@@ -13,12 +13,20 @@
     "capture_every_frame": false,
     "capture_on_movement": false,
     "always_persist_rendering_state": true,
-    "default_location": [0.0, 0.0, 300.0],
-    "default_rotation": [-20.0, 0.0, 0.0],
+    "default_location": [
+      6500,
+      -7500,
+      6500
+    ],
+    "default_rotation": [
+      -32,
+      139,
+      0
+    ],
     "sync_mask_to_rgb": true,
     "camera_intrinsics": {
       "projection_type": "perspective",
-      "fov_deg": 90.0,
+      "fov_deg": 65.0,
       "fx_px": null,
       "fy_px": null,
       "cx_px": null,
@@ -35,6 +43,7 @@
     "streams": [
       {
         "name": "rgb",
+        "color_space": "srgb",
         "actor_label": "SC_RGB",
         "rt_asset_name": "RT_RGB",
         "file_suffix": "rgb",
@@ -46,6 +55,7 @@
       },
       {
         "name": "mask",
+        "color_space": "linear",
         "actor_label": "SC_MASK",
         "rt_asset_name": "RT_MASK",
         "file_suffix": "mask",
@@ -64,42 +74,33 @@
   },
   "semantics": {
     "class_table_csv": "config/semantic_classes.csv",
-    "semantic_map_csv": "output/semantic_map.csv",
+    "semantic_map_csv": "output/capture_lab/semantic_map.csv",
     "mask_encoding": "class_color",
     "unknown_stencil": 250
   },
   "output": {
-    "capture_dir": "output/captures",
-    "metadata_csv": "output/capture_metadata.csv",
-    "inventory_json": "output/scene_inventory.json",
-    "inventory_csv": "output/scene_inventory.csv",
-    "semantic_validation_csv": "output/semantic_map_validation.csv",
-    "stencil_writeback_log": "output/stencil_writeback_log.csv",
-    "file_prefix": "cap",
+    "capture_dir": "output/capture_lab/captures",
+    "metadata_csv": "output/capture_lab/capture_metadata.csv",
+    "inventory_json": "output/capture_lab/scene_inventory.json",
+    "inventory_csv": "output/capture_lab/scene_inventory.csv",
+    "semantic_validation_csv": "output/capture_lab/semantic_map_validation.csv",
+    "stencil_writeback_log": "output/capture_lab/stencil_writeback_log.csv",
+    "file_prefix": "lab",
     "force_png_opaque": true,
     "force_mask_png_opaque": true
   },
   "runtime": {
     "enabled": true,
-    "profile": "citysample_bigcity",
-    "warmup_seconds": 3.0,
+    "profile": "generic",
+    "warmup_seconds": 2.0,
     "pause_after_warmup": true,
     "resume_after_capture": true,
     "wait_for_streaming": true,
     "streaming_timeout_seconds": 120.0,
-    "move_player_to_capture": true,
-    "restore_player_after_capture": false,
-    "hide_player_during_capture": true,
-    "player_streaming_source_z_offset_cm": 5000.0,
-    "citysample": {
-      "main_grid_loading_range": 12800,
-      "hlod0_loading_range": 76800,
-      "hlod_warmup_enabled": true,
-      "disable_fastgeo_transformer_before_play": true,
-      "restore_fastgeo_transformer_after_play": true,
-      "disable_fastgeo_transformer_for_semantic_capture": false,
-      "restore_fastgeo_transformer_after_capture": false
-    },
+    "move_player_to_capture": false,
+    "restore_player_after_capture": true,
+    "hide_player_during_capture": false,
+    "player_streaming_source_z_offset_cm": 0.0,
     "console_commands": [],
     "auto_semantic_stencil": {
       "enabled": true,
@@ -107,12 +108,13 @@
       "unknown_for_unmatched": true,
       "component_order": "capture_distance",
       "max_components": 0,
+      "components_per_tick": 256,
       "unmatched_sample_limit": 20,
-      "aliases_csv": "config/runtime_semantic_aliases.csv"
+      "aliases_csv": ""
     }
   },
   "batch": {
-    "poses_csv": "config/camera_poses.csv",
+    "poses_csv": "config/capture_lab_poses.csv",
     "sleep_seconds": 0.0,
     "continue_on_error": true,
     "skip_existing_capture_id": true,

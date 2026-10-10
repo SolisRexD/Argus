@@ -168,6 +168,110 @@ def test_job_resets_warmup_when_streaming_regresses(monkeypatch):
     assert job.done is False
 
 
+def test_incremental_semantics_keeps_job_alive_across_editor_ticks(monkeypatch):
+    module, api = import_capture_system(monkeypatch)
+    events = []
+    def annotate():
+        events.append("first")
+        yield
+        events.append("second")
+        yield
+        return {"scanned_components": 2}
+    job = module.CaptureJob(
+        capture_id="incremental", runtime_plan=RuntimePreparationPlan(enabled=False),
+        is_streaming_completed=lambda: True, prepare_semantics=annotate,
+        capture=lambda stats: events.append("capture") or stats,
+        cleanup=lambda: events.append("cleanup"),
+    ).start()
+    for _ in range(3):
+        api.tick()
+    assert not job.done
+    assert "capture" not in events
+    for _ in range(4):
+        api.tick()
+    assert job.done and job.error is None
+    assert job.result == {"scanned_components": 2}
+    assert events == ["first", "second", "capture", "cleanup"]
+
+
+def test_interrupted_annotation_closes_generator_before_runtime_cleanup(monkeypatch):
+    module, api = import_capture_system(monkeypatch)
+    events = []
+
+    def annotate():
+        try:
+            yield
+            events.append("unexpected continuation")
+        finally:
+            events.append("generator closed")
+
+    job = module.CaptureJob(
+        capture_id="interrupted", runtime_plan=RuntimePreparationPlan(enabled=False),
+        is_streaming_completed=lambda: True, prepare_semantics=annotate,
+        capture=lambda stats: events.append("unexpected capture"),
+        cleanup=lambda: events.append("runtime restored"),
+    ).start()
+    for _ in range(3):
+        api.tick()
+    job._finish(error=RuntimeError("interrupted"))
+    api.tick()
+    assert job.done and str(job.error) == "interrupted"
+    assert job._semantic_work is None
+    assert events == ["generator closed", "runtime restored"]
+    assert not api.callbacks
+
+
+def test_finished_job_releases_runtime_objects_even_if_job_is_kept(monkeypatch):
+    module, api = import_capture_system(monkeypatch)
+
+    class RuntimeObjects:
+        def ready(self):
+            return True
+
+        def annotate(self):
+            return {}
+
+        def capture(self, stats):
+            return {"capture_id": "release"}
+
+        def cleanup(self):
+            pass
+
+    runtime = RuntimeObjects()
+    ref = weakref.ref(runtime)
+    job = module.CaptureJob(
+        capture_id="release", runtime_plan=RuntimePreparationPlan(enabled=False),
+        is_streaming_completed=runtime.ready, prepare_semantics=runtime.annotate,
+        capture=runtime.capture, cleanup=runtime.cleanup,
+    ).start()
+    del runtime
+    assert ref() is not None
+    for _ in range(3):
+        api.tick()
+    assert job.done and job.result == {"capture_id": "release"}
+    assert ref() is None
+
+
+def test_completion_callback_failure_does_not_block_other_callbacks(monkeypatch):
+    module, api = import_capture_system(monkeypatch)
+    events = []
+    job = module.CaptureJob(
+        capture_id="callback", runtime_plan=RuntimePreparationPlan(enabled=False),
+        is_streaming_completed=lambda: True, prepare_semantics=lambda: {},
+        capture=lambda stats: {"capture_id": "callback"}, cleanup=lambda: None,
+    ).start()
+
+    def broken_callback(done):
+        raise RuntimeError("observer failed")
+
+    job.add_done_callback(broken_callback)
+    job.add_done_callback(lambda done: events.append(done.result))
+    for _ in range(3):
+        api.tick()
+    assert events == [{"capture_id": "callback"}]
+    assert job.done and job.error is None and not api.callbacks
+
+
 def test_job_timeout_and_capture_error_both_cleanup(monkeypatch):
     module, unreal_api = import_capture_system(monkeypatch)
     clock = FakeClock()
@@ -291,7 +395,7 @@ def test_capture_service_applies_semantics_only_after_streaming(monkeypatch, tmp
         finish_after_capture=lambda plan: capture_events.append("cleanup"),
     )
     semantic_controller = types.SimpleNamespace(
-        apply=lambda cfg, pose: semantic_calls.append("semantics") or {"scanned": 10}
+        apply_incremental=lambda cfg, pose: semantic_calls.append("semantics") or {"scanned": 10}
     )
     service = module.CaptureService()
     service.runtime_session_controller = types.SimpleNamespace(
@@ -305,6 +409,7 @@ def test_capture_service_applies_semantics_only_after_streaming(monkeypatch, tmp
         intrinsics_to_metadata=lambda component, intrinsics: {},
     )
     service._configure_component = lambda *args, **kwargs: None
+    service._configure_stream_render_target = lambda *args, **kwargs: None
     service._configure_stream_post_process = lambda *args, **kwargs: None
     service._capture_twice = lambda current_component: capture_events.append("capture")
     service._choose_ext_by_rt = lambda rt: ".png"

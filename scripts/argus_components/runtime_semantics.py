@@ -15,8 +15,19 @@ class RuntimeSemanticStencilController:
         self._warn = warn_fn or warn
 
     def apply(self, cfg, pose=None):
+        """Synchronous adapter for existing callers outside CaptureJob."""
+        work = self.apply_incremental(cfg, pose=pose)
+        while True:
+            try:
+                next(work)
+            except StopIteration as finished:
+                return finished.value
+
+    def apply_incremental(self, cfg, pose=None):
+        """Yield after a bounded number of components so the editor can tick."""
         runtime_cfg = cfg.get("runtime", {})
         options = runtime_cfg.get("auto_semantic_stencil", {})
+        components_per_tick = max(1, parse_int(options.get("components_per_tick"), default=256))
         enabled = parse_bool(options.get("enabled"), default=False)
 
         stats = {
@@ -68,12 +79,12 @@ class RuntimeSemanticStencilController:
                 self._log_summary(stats)
                 return stats
 
+            if stats["scanned_components"] and stats["scanned_components"] % components_per_tick == 0:
+                yield
+
             stats["scanned_components"] += 1
 
             existing_stencil = self._get_int_property(component, "custom_depth_stencil_value", 0)
-            fields = self._collect_fields(actor, component)
-            component_fields = self._collect_component_fields(component)
-
             if preserve_existing and existing_stencil > 0:
                 stats["preserved"] += 1
                 self._increment_count(stats["preserved_by_stencil"], str(existing_stencil))
@@ -86,11 +97,16 @@ class RuntimeSemanticStencilController:
 
                 continue
 
+            identity_fields = self._collect_component_identity(component)
+            component_fields = identity_fields + self._collect_material_fields(component)
+            fields = [self._actor_label(actor), self._object_name(actor), self._class_name(actor)] + component_fields
+
             decision = self._infer_component_semantic_stencil(
                 fields,
                 component_fields,
                 unknown_for_unmatched=False,
                 alias_rules=alias_rules,
+                identity_fields=identity_fields,
             )
 
             if decision is None:
@@ -100,6 +116,7 @@ class RuntimeSemanticStencilController:
                         component_fields,
                         unknown_for_unmatched=True,
                         alias_rules=alias_rules,
+                        identity_fields=identity_fields,
                     )
 
                     if decision is None:
@@ -136,7 +153,14 @@ class RuntimeSemanticStencilController:
         component_fields,
         unknown_for_unmatched=False,
         alias_rules=(),
+        identity_fields=None,
     ):
+        # A roof made with a paving material is still a roof. Mesh identity is
+        # stronger evidence than a reusable surface material or parent label.
+        if identity_fields:
+            decision = infer_semantic_stencil(identity_fields, rules=alias_rules)
+            if decision:
+                return decision
         if alias_rules:
             decision = infer_semantic_stencil(
                 component_fields,
@@ -235,6 +259,9 @@ class RuntimeSemanticStencilController:
         ] + self._collect_component_fields(component)
 
     def _collect_component_fields(self, component):
+        return self._collect_component_identity(component) + self._collect_material_fields(component)
+
+    def _collect_component_identity(self, component):
         fields = [
             self._object_name(component),
             self._class_name(component),
@@ -246,6 +273,10 @@ class RuntimeSemanticStencilController:
                 fields.append(self._object_name(asset))
                 fields.append(self._object_path(asset))
 
+        return fields
+
+    def _collect_material_fields(self, component):
+        fields = []
         for material in self._get_materials(component):
             fields.append(self._object_name(material))
             fields.append(self._object_path(material))
@@ -372,6 +403,8 @@ class RuntimeSemanticStencilController:
 
     def _ensure_component_custom_depth(self, component):
         was_enabled = self._get_bool_property(component, "render_custom_depth", False)
+        if was_enabled:
+            return False
 
         try:
             component.set_editor_property("render_custom_depth", True)

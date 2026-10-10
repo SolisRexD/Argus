@@ -48,7 +48,8 @@ def _finish_capture(job, context):
     _notify(context, "Argus captured: {}".format(capture_id))
 
 
-def capture_player_view():
+def capture_player_view(config_path=None):
+    """Capture the current PIE camera with the default or an explicit preset."""
     global _active_job
     if _active_job is not None and not _active_job.done:
         _notify(None, "Argus capture already in progress")
@@ -57,7 +58,7 @@ def capture_player_view():
     job = None
     try:
         context = _get_player_controller()
-        cfg, _ = load_json_config()
+        cfg, _ = load_json_config(config_path)
         runtime_cfg = cfg.setdefault("runtime", {})
         runtime_cfg["move_player_to_capture"] = False
         runtime_cfg["restore_player_after_capture"] = False

@@ -10,7 +10,7 @@ from common import ensure_dir, log, resolve_path, warn
 
 
 DEFAULT_STATE_FILE = "output/runtime_play_session_state.json"
-RESTORABLE_BOOL_CVARS = {"FastGeo.EnableTransformer"}
+RESTORABLE_BOOL_CVARS = {"FastGeo.EnableTransformer", "CitySample.UseSandboxIntro"}
 
 
 class RuntimePlaySessionController:

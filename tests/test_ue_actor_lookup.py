@@ -68,7 +68,7 @@ def test_find_actor_by_label_falls_back_to_game_world_when_editor_actor_lookup_f
     assert common.find_actor_by_label("SC_RGB") is target
 
 
-def test_find_actor_by_label_searches_later_worlds_when_first_world_has_other_actors(monkeypatch):
+def test_pie_lookup_never_uses_an_editor_actor_when_runtime_actor_is_missing(monkeypatch):
     target = FakeActor("SC_RGB")
     game_world = FakeWorld([FakeActor("Traffic"), FakeActor("Pedestrian")])
     editor_world = FakeWorld([FakeActor("SC_MASK"), target])
@@ -97,7 +97,27 @@ def test_find_actor_by_label_searches_later_worlds_when_first_world_has_other_ac
 
     common = import_common_with_fake_unreal(monkeypatch, fake_unreal)
 
-    assert common.find_actor_by_label("SC_RGB") is target
+    assert common.find_actor_by_label("SC_RGB") is None
+
+
+def test_pie_enumeration_does_not_call_editor_world_apis(monkeypatch):
+    world = FakeWorld([FakeActor("SC_RGB")])
+    calls = []
+    subsystem = types.SimpleNamespace(
+        get_game_world=lambda: world,
+        get_editor_world=lambda: calls.append("editor") or FakeWorld([]),
+    )
+    fake_unreal = types.SimpleNamespace(
+        Actor=object,
+        UnrealEditorSubsystem=object,
+        get_editor_subsystem=lambda cls: subsystem,
+        GameplayStatics=types.SimpleNamespace(
+            get_all_actors_of_class=lambda w, cls: w.actors,
+        ),
+    )
+    common = import_common_with_fake_unreal(monkeypatch, fake_unreal)
+    assert common.get_all_level_actors() == world.actors
+    assert calls == []
 
 
 def test_get_all_level_actors_falls_back_to_game_world_when_editor_actor_lookup_fails(monkeypatch):

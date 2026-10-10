@@ -2,6 +2,15 @@
 
 Argus 是一个可配置的 Unreal Engine 语义数据采集管线，默认同步导出 RGB 图像与语义分割掩码，并支持扩展到多流采集。
 
+## 从这里开始
+
+- **人工逐脚本使用**：[操作指南](docs/operator_guide.md)，包含执行环境、参数、先后顺序和每一步的验收。
+- **Agent 接手和排障**：[接手手册](docs/agent_runbook.md)，包含状态判断、MCP 注意事项、UE 机制调整及失败恢复。
+- **当前测试场景**：[CaptureLab](docs/capture_lab.md)。默认 `config/pipeline_config.json` 是 generic，输出在 `output/capture_lab/`；Big City 使用独立的 `config/pipeline_citysample.json`。
+- **已完成的测试及限制**：[2026-10-09 验证基线](docs/validation/2026-10-09-capture-baseline.md)。详细产物在本机 `output/validation/`，该目录被 Git 忽略；仓库内基线保留关键结论。
+
+下文保留数据模型和配置示例；旧示例中的 `/Game/Tools/Semantic`、`camera_poses.csv` 和 `output/captures/` 对应 CitySample 风格，实际运行以所选配置和上述操作指南为准。采集返回异步 Job，需要在编辑器继续 tick 后检查结果。
+
 它的核心思想是：
 
 - RGB 是否可见，由主渲染通道控制；
@@ -754,7 +763,7 @@ scripts/capture_rgb_and_mask.py
 1. 执行一次采集；
 2. 校验预期输出文件是否真实存在；
 3. 追加写入 `capture_metadata.csv`；
-4. 返回 `capture_id` 与文件路径。
+4. 返回异步 CaptureJob；完成后从 `job.result` 读取 `capture_id` 与文件路径。
 
 默认输出示例：
 

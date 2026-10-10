@@ -337,6 +337,10 @@ def _citysample_play_session_commands(runtime_cfg):
     pre_play_commands = []
     post_play_commands = []
 
+    if _parse_bool(city_cfg.get("disable_sandbox_intro_before_play"), default=False):
+        pre_play_commands.append("CitySample.UseSandboxIntro 0")
+        post_play_commands.append("CitySample.UseSandboxIntro 1")
+
     legacy_disable_fastgeo = _parse_bool(
         city_cfg.get(
             "disable_fastgeo_transformer_for_semantic_capture",

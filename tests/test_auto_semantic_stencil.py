@@ -150,7 +150,7 @@ def test_loads_plain_alias_csv_for_llm_friendly_runtime_rules(tmp_path):
 
 def test_project_runtime_alias_file_uses_semantic_palette_classes():
     root = Path(__file__).resolve().parents[1]
-    cfg = __import__("json").loads((root / "config" / "pipeline_config.json").read_text())
+    cfg = __import__("json").loads((root / "config" / "pipeline_citysample.json").read_text())
     alias_path = root / cfg["runtime"]["auto_semantic_stencil"]["aliases_csv"]
     palette_path = root / "config" / "semantic_classes.csv"
 
@@ -169,7 +169,7 @@ def test_project_runtime_alias_file_uses_semantic_palette_classes():
 
 def test_project_runtime_alias_file_prioritizes_citysample_ocean_as_water():
     root = Path(__file__).resolve().parents[1]
-    cfg = __import__("json").loads((root / "config" / "pipeline_config.json").read_text())
+    cfg = __import__("json").loads((root / "config" / "pipeline_citysample.json").read_text())
     alias_path = root / cfg["runtime"]["auto_semantic_stencil"]["aliases_csv"]
     rules = load_semantic_alias_rules(alias_path)
 

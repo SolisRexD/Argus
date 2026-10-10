@@ -21,6 +21,7 @@ import json
 import math
 import os
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import unreal
@@ -44,6 +45,7 @@ from common import (
     parse_bool,
     parse_float,
     resolve_path,
+    warn,
 )
 
 
@@ -72,6 +74,7 @@ class CaptureStreamSpec:
     sync_to_primary: bool
     force_png_opaque: bool
     capture_source: str
+    color_space: str = ""
 
 
 class CaptureStreamRegistry:
@@ -149,6 +152,7 @@ class CaptureStreamRegistry:
         - sync_to_primary
         - force_png_opaque
         - capture_source
+        - color_space (srgb / linear for 8-bit render targets)
         """
         name = str(row.get("name", "")).strip()
         actor_label = str(row.get("actor_label", "")).strip()
@@ -167,6 +171,7 @@ class CaptureStreamRegistry:
             sync_to_primary=parse_bool(row.get("sync_to_primary"), default=False),
             force_png_opaque=parse_bool(row.get("force_png_opaque"), default=False),
             capture_source=str(row.get("capture_source", self.capture_cfg.get("capture_source", ""))).strip(),
+            color_space=str(row.get("color_space", "")).strip().lower(),
         )
 
     def list_streams(self):
@@ -522,6 +527,24 @@ class BaseCaptureService:
             except Exception:
                 pass
 
+    def _configure_stream_render_target(self, rt, stream):
+        """Encode color PNGs as sRGB while keeping semantic values linear."""
+        color_space = stream.color_space or {"rgb": "srgb", "mask": "linear"}.get(stream.name, "")
+        if not color_space:
+            return
+        if color_space not in {"srgb", "linear"}:
+            raise ValueError("Unsupported capture color_space: {}".format(color_space))
+        current_format = rt.get_editor_property("render_target_format")
+        formats = unreal.TextureRenderTargetFormat
+        if current_format not in (formats.RTF_RGBA8, formats.RTF_RGBA8_SRGB):
+            return  # Preserve HDR/data formats selected by the user.
+        desired = formats.RTF_RGBA8_SRGB if color_space == "srgb" else formats.RTF_RGBA8
+        if current_format != desired:
+            rt.set_editor_property("render_target_format", desired)
+        gamma = 2.2 if color_space == "srgb" else 1.0
+        if not math.isclose(rt.get_editor_property("target_gamma"), gamma, abs_tol=1e-6):
+            rt.set_editor_property("target_gamma", gamma)
+
     def _clear_post_process_materials(self, scene_capture_comp):
         """Clear stale weighted blendables from a capture component."""
         settings = scene_capture_comp.get_editor_property("post_process_settings")
@@ -699,6 +722,7 @@ class DualCaptureSetupService(BaseCaptureService):
                 raise RuntimeError("SceneCaptureComponent2D 缺失: {}".format(stream.actor_label))
 
             rt = load_asset_or_raise("{}/{}".format(asset_root, stream.rt_asset_name))
+            self._configure_stream_render_target(rt, stream)
             capture_source_name = stream.capture_source or capture_cfg.get("capture_source", "")
 
             self._configure_component(component, rt, capture_source_name, capture_cfg)
@@ -801,6 +825,7 @@ class CaptureJob:
         self._warmup_started_at = None
         self._stable_streaming_ticks = 0
         self._semantic_stats = None
+        self._semantic_work = None
         self._state = "waiting"
 
     def start(self):
@@ -834,6 +859,13 @@ class CaptureJob:
                 self._tick_warming(now)
             elif self._state == "capturing":
                 self._finish(result=self._capture(self._semantic_stats))
+            elif self._state == "annotating":
+                try:
+                    next(self._semantic_work)
+                except StopIteration as finished:
+                    self._semantic_stats = finished.value
+                    self._semantic_work = None
+                    self._state = "capturing"
         except Exception as exc:
             self._finish(error=exc)
 
@@ -879,7 +911,12 @@ class CaptureJob:
             return
 
         self._semantic_stats = self._prepare_semantics()
-        self._state = "capturing"
+        if isinstance(self._semantic_stats, Iterator):
+            self._semantic_work = self._semantic_stats
+            self._semantic_stats = None
+            self._state = "annotating"
+        else:
+            self._state = "capturing"
 
     def _finish(self, result=None, error=None):
         if self.done:
@@ -888,6 +925,14 @@ class CaptureJob:
         if self._tick_handle is not None:
             unreal.unregister_slate_post_tick_callback(self._tick_handle)
             self._tick_handle = None
+
+        work, self._semantic_work = self._semantic_work, None
+        try:
+            if work is not None and hasattr(work, "close"):
+                work.close()
+        except Exception as close_error:
+            if error is None:
+                error = close_error
 
         try:
             self._cleanup()
@@ -899,6 +944,12 @@ class CaptureJob:
         self.result = result if error is None else None
         self.error = error
         self.done = True
+        # Finished jobs may remain in UI/history. Release the PIE objects held
+        # by bound methods and closures before the world unloads or is collected.
+        self._is_streaming_completed = None
+        self._prepare_semantics = None
+        self._capture = None
+        self._cleanup = None
         callbacks = self._callbacks
         self._callbacks = []
 
@@ -1081,6 +1132,7 @@ class CaptureService(BaseCaptureService):
                 )
 
             rt = load_asset_or_raise("{}/{}".format(asset_root, stream.rt_asset_name))
+            self._configure_stream_render_target(rt, stream)
             capture_source_name = stream.capture_source or capture_cfg.get("capture_source", "")
 
             self._configure_component(
@@ -1169,7 +1221,7 @@ class CaptureService(BaseCaptureService):
             if runtime_plan.pause_after_warmup:
                 self.runtime_controller.set_game_paused(True)
 
-            return self.semantic_stencil_controller.apply(cfg, pose=pose)
+            return self.semantic_stencil_controller.apply_incremental(cfg, pose=pose)
 
         def capture_ready(semantic_stencil_stats):
             return self._capture_and_export(

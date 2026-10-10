@@ -11,6 +11,7 @@ class RuntimeCaptureController:
 
     def __init__(self):
         self._player_restore_state = None
+        self._capture_view_state = None
 
     def prepare_for_capture(self, cfg, pose=None, capture_actor=None):
         """Apply runtime preparation before exporting capture streams."""
@@ -37,14 +38,21 @@ class RuntimeCaptureController:
             warn("Rejected runtime console command outside allowlist: {}".format(command))
 
         if plan.move_player_to_capture:
-            self._move_player_streaming_source(
-                world,
-                plan.capture_point,
-                capture_actor=capture_actor,
-                restore_after_capture=plan.restore_player_after_capture,
-                hide_during_capture=plan.hide_player_during_capture,
-                z_offset_cm=plan.player_streaming_source_z_offset_cm,
-            )
+            try:
+                self._move_player_streaming_source(
+                    world,
+                    plan.capture_point,
+                    capture_actor=capture_actor,
+                    restore_after_capture=plan.restore_player_after_capture,
+                    hide_during_capture=plan.hide_player_during_capture,
+                    z_offset_cm=plan.player_streaming_source_z_offset_cm,
+                )
+            except Exception:
+                # A failed preparation must roll back even when successful
+                # captures are configured to leave the pawn at the new pose.
+                self._restore_player_streaming_source()
+                self.finish_after_capture(plan)
+                raise
 
         if plan.wait_for_streaming:
             self._flush_level_streaming(world)
@@ -75,9 +83,14 @@ class RuntimeCaptureController:
 
         if plan.move_player_to_capture and plan.restore_player_after_capture:
             self._restore_player_streaming_source()
+        else:
+            self._player_restore_state = None
 
-        if plan.pause_after_warmup and plan.resume_after_capture:
-            self.set_game_paused(False)
+        try:
+            self._restore_capture_view_target()
+        finally:
+            if plan.pause_after_warmup and plan.resume_after_capture:
+                self.set_game_paused(False)
 
     def is_game_paused(self, world=None):
         """Best-effort query for game pause state."""
@@ -174,13 +187,10 @@ class RuntimeCaptureController:
             warn("Unable to move player streaming source; no player pawn or capture actor is available")
             return False
 
-        if restore_after_capture:
-            self._player_restore_state = self._snapshot_player_state(
-                pawn=pawn,
-                controller=controller,
-            )
-        else:
-            self._player_restore_state = None
+        self._player_restore_state = self._snapshot_player_state(
+            pawn=pawn,
+            controller=controller,
+        )
 
         location = unreal.Vector(
             capture_point.x,
@@ -197,13 +207,24 @@ class RuntimeCaptureController:
         if controller:
             self._set_controller_rotation(controller, rotation)
 
-            if not pawn and capture_actor:
-                self._set_view_target(controller, capture_actor)
+            if capture_actor:
+                previous_target = self._get_view_target(controller)
+                if previous_target != capture_actor:
+                    if not self._set_view_target(controller, capture_actor):
+                        raise RuntimeError("Unable to use the capture camera as the player streaming source")
+                    self._capture_view_state = (controller, previous_target)
 
         if moved:
             log("Moved player streaming source near capture pose")
 
         return moved
+
+    def _restore_capture_view_target(self):
+        state = self._capture_view_state
+        self._capture_view_state = None
+        if state and state[1]:
+            if not self._set_view_target(*state):
+                raise RuntimeError("Unable to restore the player view target after capture")
 
     def _restore_player_streaming_source(self):
         state = self._player_restore_state
@@ -343,7 +364,7 @@ class RuntimeCaptureController:
             return False
 
         try:
-            controller.set_view_target(actor)
+            controller.set_view_target_with_blend(actor, 0.0)
             return True
         except Exception:
             return False
@@ -351,8 +372,8 @@ class RuntimeCaptureController:
     def _get_world(self):
         """Prefer PIE/game world, fall back to editor world."""
         for getter in (
-            self._get_editor_level_game_world,
             self._get_unreal_editor_game_world,
+            self._get_editor_level_game_world,
             self._get_unreal_editor_world,
             self._get_editor_level_world,
         ):

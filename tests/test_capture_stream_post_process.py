@@ -107,6 +107,21 @@ def test_setup_and_capture_share_base_post_process_implementation(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("stream_name,initial,expected,gamma", [
+    ("rgb", "linear", "srgb", 2.2),
+    ("mask", "srgb", "linear", 1.0),
+    ("depth", "float", "float", 0.0),
+])
+def test_capture_color_encoding_keeps_mask_values_linear(monkeypatch, stream_name, initial, expected, gamma):
+    module = import_capture_system(monkeypatch)
+    module.unreal.TextureRenderTargetFormat = types.SimpleNamespace(RTF_RGBA8="linear", RTF_RGBA8_SRGB="srgb")
+    props = {"render_target_format": initial, "target_gamma": 0.0}
+    rt = types.SimpleNamespace(get_editor_property=props.__getitem__, set_editor_property=props.__setitem__)
+    stream = types.SimpleNamespace(name=stream_name, color_space="")
+    module.BaseCaptureService()._configure_stream_render_target(rt, stream)
+    assert props == {"render_target_format": expected, "target_gamma": gamma}
+
+
 def test_capture_once_validates_session_and_rebinds_post_process_each_time(
     monkeypatch,
     tmp_path,
@@ -143,6 +158,7 @@ def test_capture_once_validates_session_and_rebinds_post_process_each_time(
         validate_capture_session=lambda cfg: events.append("validate")
     )
     service._configure_component = lambda *args, **kwargs: None
+    service._configure_stream_render_target = lambda *args, **kwargs: None
     service._configure_stream_post_process = (
         lambda *args, **kwargs: events.append("post_process")
     )

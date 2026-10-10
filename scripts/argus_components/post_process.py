@@ -108,37 +108,22 @@ class SemanticPostProcessBuilder:
 
         return rt
 
-    def set_render_target_rgba8(self, rt):
+    def set_render_target_rgba8(self, rt, srgb=False):
         """
         将 RenderTarget 格式设置为 RGBA8。
 
-        不同 UE 版本里的枚举名可能不同，
-        所以这里尝试多个候选名称。
+        使用 UE 5.8 的精确枚举，RGB 与 MASK 分别选择 sRGB / linear。
 
         返回：
         - 实际成功使用的枚举名称
         """
-        candidates = [
-            "RTF_RGBA8",
-            "RTF_R8G8B8A8",
-            "RTF_RGBA8_SRGB",
-        ]
+        name = "RTF_RGBA8_SRGB" if srgb else "RTF_RGBA8"
+        rt.set_editor_property(
+            "render_target_format", getattr(unreal.TextureRenderTargetFormat, name))
+        rt.set_editor_property("target_gamma", 2.2 if srgb else 1.0)
+        return name
 
-        last_error = None
-
-        for name in candidates:
-            try:
-                rt.set_editor_property(
-                    "render_target_format",
-                    getattr(unreal.TextureRenderTargetFormat, name),
-                )
-                return name
-            except Exception as e:
-                last_error = e
-
-        raise RuntimeError("设置 RenderTarget RGBA8 格式失败: {}".format(last_error))
-
-    def load_or_create_rt(self, asset_path, asset_name, width, height):
+    def load_or_create_rt(self, asset_path, asset_name, width, height, srgb=False):
         """
         加载或创建 RenderTarget，并更新尺寸和格式。
 
@@ -161,7 +146,7 @@ class SemanticPostProcessBuilder:
             rt.set_editor_property("size_x", width)
             rt.set_editor_property("size_y", height)
 
-        fmt_name = self.set_render_target_rgba8(rt)
+        fmt_name = self.set_render_target_rgba8(rt, srgb=srgb)
 
         try:
             rt.set_editor_property(
@@ -411,7 +396,7 @@ class SemanticPostProcessBuilder:
         width = int(render_cfg.get("width", 1920))
         height = int(render_cfg.get("height", 1080))
 
-        rt_rgb = self.load_or_create_rt(asset_root, rt_rgb_name, width, height)
+        rt_rgb = self.load_or_create_rt(asset_root, rt_rgb_name, width, height, srgb=True)
         rt_mask = self.load_or_create_rt(asset_root, rt_mask_name, width, height)
 
         return {

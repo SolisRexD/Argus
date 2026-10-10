@@ -5,6 +5,7 @@ import types
 import pytest
 
 from argus_core.capture import RuntimePreparationPlan
+from argus_core.capture.runtime import CapturePoint
 
 
 def import_runtime_control(monkeypatch):
@@ -130,3 +131,66 @@ def test_make_streaming_query_source_rejects_missing_actor(monkeypatch):
 
     with pytest.raises(RuntimeError, match="capture actor"):
         controller.make_streaming_query_source(None)
+
+
+def test_capture_uses_view_target_for_streaming_and_restores_it_without_teleport_restore(monkeypatch):
+    module = import_runtime_control(monkeypatch)
+    service = module.RuntimeCaptureController()
+    calls = []
+    old_target, capture_actor, pawn, world = object(), object(), object(), object()
+    player = types.SimpleNamespace(
+        get_view_target=lambda: old_target,
+        set_view_target_with_blend=lambda target, seconds: calls.append((target, seconds)),
+    )
+    module.unreal.Vector = lambda *args: args
+    monkeypatch.setattr(module, "make_rotator", lambda *args: args)
+    service._get_player_pawn = lambda w: pawn
+    service._get_player_controller = lambda w: player
+    service._set_actor_transform = lambda *args: True
+    service._set_controller_rotation = lambda *args: None
+    service._move_player_streaming_source(world, CapturePoint(1, 2, 3),
+                                         capture_actor=capture_actor, restore_after_capture=False)
+    assert calls == [(capture_actor, 0.0)]
+    service.finish_after_capture(RuntimePreparationPlan(enabled=True, move_player_to_capture=True))
+    assert calls == [(capture_actor, 0.0), (old_target, 0.0)]
+    assert service._capture_view_state is None
+
+
+def test_prepare_failure_rolls_back_even_when_success_would_leave_player_moved(monkeypatch):
+    module = import_runtime_control(monkeypatch)
+    service = module.RuntimeCaptureController()
+    events = []
+    old_target, capture_actor, world = object(), object(), object()
+    pawn = types.SimpleNamespace(
+        get_actor_location=lambda: "original location",
+        get_actor_rotation=lambda: "original rotation",
+        is_hidden=lambda: False,
+    )
+    player = types.SimpleNamespace(get_view_target=lambda: old_target)
+    module.unreal.Vector = lambda *args: args
+    monkeypatch.setattr(module, "make_rotator", lambda *args: args)
+    service._get_world = lambda: world
+    service._get_player_pawn = lambda w: pawn
+    service._get_player_controller = lambda w: player
+    service._set_actor_transform = lambda actor, loc, rot: events.append((loc, rot)) or True
+    service._set_actor_hidden = lambda actor, hidden: events.append(("hidden", hidden))
+    cfg = {"runtime": {"enabled": True, "move_player_to_capture": True,
+                       "restore_player_after_capture": False, "hide_player_during_capture": True}}
+    pose = {"x": 1, "y": 2, "z": 3, "pitch": 0, "yaw": 0, "roll": 0}
+    with pytest.raises(RuntimeError, match="streaming source"):
+        service.prepare_for_capture(cfg, pose, capture_actor)
+    assert ("original location", "original rotation") in events
+    assert events[-1] == ("hidden", False)
+    assert service._player_restore_state is None
+
+
+def test_view_restore_failure_still_unpauses_game(monkeypatch):
+    module = import_runtime_control(monkeypatch)
+    service = module.RuntimeCaptureController()
+    service._capture_view_state = (object(), object())
+    events = []
+    service.set_game_paused = events.append
+    with pytest.raises(RuntimeError, match="restore the player view"):
+        service.finish_after_capture(RuntimePreparationPlan(
+            enabled=True, pause_after_warmup=True, resume_after_capture=True))
+    assert events == [False]

@@ -106,6 +106,21 @@ def test_capture_uses_player_camera_pose_and_disables_player_move(monkeypatch):
     assert messages[0] == "Argus capture started"
 
 
+def test_capture_player_view_accepts_an_explicit_scene_preset(monkeypatch):
+    module, entrypoint, messages = import_player_capture(monkeypatch)
+    loaded = []
+
+    def load_config(path):
+        loaded.append(path)
+        return {"runtime": {"profile": "citysample_bigcity"}}, path
+
+    monkeypatch.setattr(module, "load_json_config", load_config)
+    module.capture_player_view("config/pipeline_citysample.json")
+
+    assert loaded == ["config/pipeline_citysample.json"]
+    assert entrypoint.calls[0][0]["runtime"]["profile"] == "citysample_bigcity"
+
+
 def test_capture_reuses_the_active_job(monkeypatch):
     module, entrypoint, messages = import_player_capture(monkeypatch)
 

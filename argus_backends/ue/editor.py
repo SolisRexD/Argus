@@ -38,7 +38,7 @@ def get_actor_subsystem():
 
 def get_all_level_actors():
     actors = get_all_world_actors()
-    if actors:
+    if actors or _get_world_candidates():
         return actors
 
     try:
@@ -56,14 +56,8 @@ def _add_unique_world(worlds, world):
 
 
 def _get_world_candidates():
-    """Return PIE/game world first, then editor world if available."""
+    """Use the active PIE world exclusively; editor APIs reject calls during PIE."""
     worlds = []
-
-    try:
-        _add_unique_world(worlds, unreal.EditorLevelLibrary.get_game_world())
-    except Exception:
-        pass
-
     try:
         subsystem_cls = getattr(unreal, "UnrealEditorSubsystem", None)
         if subsystem_cls:
@@ -71,6 +65,17 @@ def _get_world_candidates():
             _add_unique_world(worlds, subsystem.get_game_world())
     except Exception:
         pass
+
+    if worlds:
+        return worlds
+
+    try:
+        _add_unique_world(worlds, unreal.EditorLevelLibrary.get_game_world())
+    except Exception:
+        pass
+
+    if worlds:
+        return worlds
 
     try:
         _add_unique_world(worlds, unreal.EditorLevelLibrary.get_editor_world())
@@ -151,14 +156,7 @@ def _find_actor_in_list(actors, label):
 
 
 def find_actor_by_label(label):
-    actor = _find_actor_in_list(get_all_world_actors(), label)
-    if actor:
-        return actor
-
-    try:
-        return _find_actor_in_list(get_all_level_actors(), label)
-    except Exception:
-        return None
+    return _find_actor_in_list(get_all_level_actors(), label)
 
 
 def get_capture_component(actor):

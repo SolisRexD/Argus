@@ -7,6 +7,7 @@ curated semantic_map.csv rule. Curated non-zero stencil values should still win.
 import csv
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 @dataclass(frozen=True)
@@ -75,28 +76,28 @@ def _normalize(fields):
     return " ".join(_normalize_text(field) for field in fields).strip()
 
 
+@lru_cache(maxsize=512)
+def _compiled_keywords(keywords):
+    compiled = []
+    for keyword in keywords:
+        normalized = _normalize_text(keyword)
+        if normalized:
+            compiled.append((str(keyword).strip(), normalized, normalized.replace(" ", "")))
+    return tuple(compiled)
+
+
 def _contains_any(text, keywords):
     tokens = set(text.split())
     padded_text = " {} ".format(text)
     compact_text = text.replace(" ", "")
 
-    for keyword in keywords:
-        normalized_keyword = _normalize_text(keyword)
-
-        if not normalized_keyword:
-            continue
-
-        keyword_tokens = normalized_keyword.split()
-
-        if len(keyword_tokens) == 1 and normalized_keyword in tokens:
-            return str(keyword).strip()
-
-        if len(keyword_tokens) > 1 and " {} ".format(normalized_keyword) in padded_text:
-            return str(keyword).strip()
-
-        compact_keyword = normalized_keyword.replace(" ", "")
+    for keyword, normalized_keyword, compact_keyword in _compiled_keywords(tuple(keywords)):
+        if " " not in normalized_keyword and normalized_keyword in tokens:
+            return keyword
+        if " " in normalized_keyword and " {} ".format(normalized_keyword) in padded_text:
+            return keyword
         if len(compact_keyword) >= 6 and compact_keyword in compact_text:
-            return str(keyword).strip()
+            return keyword
 
     return ""
 

@@ -2,6 +2,10 @@
 
 本文档说明 Argus 从场景扫描、语义清洗、规则回写到 RGB/MASK 数据采集的推荐执行流程。
 
+逐脚本命令和人工/自动标注分支见 [操作指南](operator_guide.md)；agent 的状态机、UE 机制排障和能力边界见 [接手手册](agent_runbook.md)；历史实测见 [验证基线](validation/2026-10-09-capture-baseline.md)。
+
+当前默认配置面向普通测试关卡 `Argus_CaptureLab`：`config/pipeline_config.json` 使用 `generic` profile，位姿表为 `config/capture_lab_poses.csv`，输出位于 `output/capture_lab/`。原 Big City 配置保存在 `config/pipeline_citysample.json`。下文原有 `output/` 根目录与 `camera_poses.csv` 示例对应 CitySample 预设；实际路径以所选配置为准。新关卡的直接运行步骤见 [干净关卡指南](capture_lab.md)。
+
 Argus 的核心原则是：
 
 - RGB 是否可见，由主渲染通道控制；
@@ -899,17 +903,19 @@ scripts/batch_capture.py
 
 交互捕捉仅支持 Unreal Editor 的 PIE：
 
-1. 在 PIE 启动前运行 `scripts/prepare_runtime_play_session.py`。
+1. 在 PIE 启动前调用 `prepare_runtime_play_session.prepare("config/pipeline_citysample.json")`。
 2. 启动 PIE 并进入 CitySample Photo Mode。
 3. 使用原有 `W/A/S/D`、鼠标和 `Q/E` 自由探索。
 4. 按 `F9` 捕捉 `PlayerCameraManager` 的最终位置、旋转和 FOV。
 5. 等待屏幕显示 `Argus captured: <capture_id>` 后再拍下一张。
 6. 需要更多视角时重复探索和捕捉。
-7. 结束后先停止 PIE，再运行 `scripts/restore_runtime_play_session.py`。
+7. 结束后先停止 PIE，再调用 `restore_runtime_play_session.restore("config/pipeline_citysample.json")`。
 
 重复按下 `F9` 不会排队；如果已有捕捉正在执行，入口会复用当前 active Job。`capture_player_view.py` 发起新捕捉时，只在本次加载到内存的配置中将 `runtime.move_player_to_capture` 和 `runtime.restore_player_after_capture` 设为 `false`，不会修改磁盘配置，也不会改变现有单帧或批量入口的行为。
 
-输出位置保持不变：图像写入 `output/captures/`，元数据追加到 `output/capture_metadata.csv`。
+F9 的现有 CitySample C++ 集成仍调用无参入口，使用 `pipeline_config.json`；若使用 F9，需要先把默认配置切回 CitySample 预设。保留通用默认配置时，可在 PIE 的 Python 控制台调用 `capture_player_view.capture_player_view("config/pipeline_citysample.json")`。原生 GameModeBase 测试关卡没有 CitySample 的 Photo Mode/F9 输入绑定，使用 Python 玩家视角入口即可。
+
+CitySample 预设将图像写入 `output/captures/`、元数据写入 `output/capture_metadata.csv`；通用默认配置写入 `output/capture_lab/`。
 
 ---
 
@@ -933,3 +939,25 @@ python scripts/citysample_argus_integration.py restore --manifest '<manifest.jso
 ```
 
 `restore` 检测到 installed hash drift 时会拒绝恢复，避免覆盖安装后发生的外部修改。集成写入的 `.uasset` 文件保留在外部 CitySample 工程中，不进入 Argus Git；该流程也不会创建 Git tag。
+
+## 24. PIE 采集、流送与输出色彩
+
+CitySample 运行时采集先用同一预设调用 prepare，启动 PIE，再运行单帧或批量入口；结束后先停止 PIE，再调用 restore。通用 `generic` 配置没有 CitySample 启停命令，干净关卡可以直接启动 PIE 采集。PIE 中只查询运行时 Actor，避免误用编辑器世界的同名采集相机。
+
+CitySample profile 的 `runtime.citysample.disable_sandbox_intro_before_play=true` 会在 PIE 创建前关闭开场动画，防止开场相机接管流送视角。它与 FastGeo 开关一样记录原始值，并在停止 PIE 后恢复；其他 profile 不应用 CitySample 命令。当前 Big City 配置的 `streaming_timeout_seconds` 为 300 秒，通用默认值仍为 120 秒。超时会结束任务并执行清理，不会继续导出未就绪场景。
+
+指定采集位姿且 `move_player_to_capture=true` 时，会临时将玩家 ViewTarget 指向采集 Actor，因为 UE 5.8 的玩家流送位置来自 ViewTarget。任务结束或失败后恢复原 ViewTarget。`restore_player_after_capture` 仅控制玩家位置等状态是否恢复，不能关闭临时视角的恢复；准备失败时则回滚已改变的玩家状态。玩家视角入口仍通过自己的配置关闭移动。
+
+自动语义标注通过 `runtime.auto_semantic_stencil.components_per_tick` 分帧执行，默认 256，当前 Big City 配置为 4096，以降低编辑器后台低帧率造成的等待。`max_components=0` 表示扫描全部已加载组件。分帧主要降低标注阶段的单帧阻塞；Actor 枚举、距离排序和图像导出仍会占用编辑器线程，不能视为硬实时预算。已有非零 stencil 优先保留；否则先匹配组件/网格身份，再参考可复用材质和 Actor 信息。自动推断结果仍需对照真值检查。
+
+8 位 RGB RenderTarget 使用 `color_space="srgb"`（`RTF_RGBA8_SRGB`、gamma 2.2），MASK 使用 `color_space="linear"`（`RTF_RGBA8`、gamma 1.0），避免语义颜色经过显示 gamma 变换。未指定时按流名称 `rgb`/`mask` 使用上述默认值；其他流保持原设置，浮点/HDR RenderTarget 不强制转换。已有资源在 setup 或采集时按配置更新，无需重新生成语义材质。
+
+相关 UE 5.8 本地参考：
+
+- `D:\UE58Knowledge\web\markdown\world-partition-in-unreal-engine.md`
+- `D:\UE58Knowledge\web\markdown\auto-exposure-in-unreal-engine.md`
+- `D:\UE58Knowledge\web\markdown\scripting-the-unreal-editor-using-python.md`
+- `E:\UE_5.8\Engine\Source\Runtime\Engine\Private\PlayerController.cpp`
+- `E:\UE_5.8\Engine\Source\Runtime\Engine\Classes\GameFramework\PlayerController.h`
+- `E:\UE_5.8\Engine\Source\Runtime\Engine\Private\TextureRenderTarget2D.cpp`
+- `E:\UE_5.8\Engine\Source\Editor\UnrealEd\Private\Subsystems\UnrealEditorSubsystem.cpp`
