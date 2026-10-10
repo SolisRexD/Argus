@@ -153,11 +153,14 @@ class CaptureLabBuilder:
                                        (2100, -650, 180), (-1350, -400, 90))):
             self.mesh("bench", f"Bench_{i}", (x, y, 20), yaw=yaw, semantic="bench")
             self.mesh("trash", f"Trash_{i}", (x + 180, y + 100, 20), semantic="prop")
+        self.lighting()
+
+    def lighting(self, sun_pitch=-48, sun_yaw=-35, intensity=40000.0, exposure=12.0):
         self.spawn(unreal.PlayerStart, "PlayerStart", (6500, -7500, 6500), (-32, 139, 0))
-        sun = self.spawn(unreal.DirectionalLight, "Sun", (0, 0, 5000), (-48, -35, 0))
+        sun = self.spawn(unreal.DirectionalLight, "Sun", (0, 0, 5000), (sun_pitch, sun_yaw, 0))
         light = sun.get_component_by_class(unreal.DirectionalLightComponent)
         light.set_mobility(unreal.ComponentMobility.MOVABLE)
-        light.set_intensity(40000.0)
+        light.set_intensity(intensity)
         light.set_atmosphere_sun_light(True)
         self.spawn(unreal.SkyAtmosphere, "SkyAtmosphere")
         sky = self.spawn(unreal.SkyLight, "SkyLight")
@@ -168,8 +171,8 @@ class CaptureLabBuilder:
         volume = self.spawn(unreal.PostProcessVolume, "FixedExposure")
         volume.set_editor_property("unbound", True)
         settings = volume.get_editor_property("settings")
-        for name, value in {"auto_exposure_min_brightness": 12.0,
-                            "auto_exposure_max_brightness": 12.0, "auto_exposure_bias": 0.0,
+        for name, value in {"auto_exposure_min_brightness": exposure,
+                            "auto_exposure_max_brightness": exposure, "auto_exposure_bias": 0.0,
                             "motion_blur_amount": 0.0, "bloom_intensity": 0.0,
                             "vignette_intensity": 0.0}.items():
             settings.set_editor_property("override_" + name, True)

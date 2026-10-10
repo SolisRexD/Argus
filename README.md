@@ -2,6 +2,8 @@
 
 Argus 是一个可配置的 Unreal Engine 语义数据采集管线，默认同步导出 RGB 图像与语义分割掩码，并支持扩展到多流采集。
 
+当前扩展方向是自动标注数据集：可复现的环境变化、多视角覆盖、精确类别 ID 与质量验收。批量数据集入口使用静态编辑器场景，不需要交互控制。
+
 ## 从这里开始
 
 - **人工逐脚本使用**：[操作指南](docs/operator_guide.md)，包含执行环境、参数、先后顺序和每一步的验收。
@@ -10,6 +12,7 @@ Argus 是一个可配置的 Unreal Engine 语义数据采集管线，默认同�
 - **已完成的测试及限制**：[2026-10-09 验证基线](docs/validation/2026-10-09-capture-baseline.md)。详细产物在本机 `output/validation/`，该目录被 Git 忽略；仓库内基线保留关键结论。
 - **程序化地图规划**：[UE 5.8 PCG 调研](docs/research/ue58_pcg_argus.md)，包含生成模式、语义实例组织、异步就绪、GPU/FastGeo 限制和分阶段实施建议。
 - **PCG 实际使用**：[生成与采集流程](docs/pcg_workflow.md)，独立 PCG 关卡、seed 重建、真实实例清单和多视角采集，使用 `config/pipeline_pcg.json`。
+- **批量自动标注数据集**：[数据集工作流](docs/dataset_workflow.md)，三种环境配方、布局/摆放/相机种子、分组划分、整数标签、校验与续跑，使用 `config/dataset_pcg.json`。
 
 下文保留数据模型和配置示例；旧示例中的 `/Game/Tools/Semantic`、`camera_poses.csv` 和 `output/captures/` 对应 CitySample 风格，实际运行以所选配置和上述操作指南为准。采集返回异步 Job，需要在编辑器继续 tick 后检查结果。
 

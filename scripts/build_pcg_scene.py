@@ -32,7 +32,7 @@ class PCGLabBaseBuilder(CaptureLabBuilder):
         return actor
 
 
-def create(config_path=DEFAULT_CONFIG):
+def create(config_path=DEFAULT_CONFIG, builder=None):
     cfg, _ = load_json_config(config_path)
     recipe, classes = load_recipe(cfg["pcg"]["recipe"], cfg["semantics"]["class_table_csv"])
     editor = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
@@ -45,7 +45,7 @@ def create(config_path=DEFAULT_CONFIG):
             raise RuntimeError("Asset exists; open it or choose new recipe paths: " + path)
     if cfg["runtime"]["profile"] != "generic" or cfg["runtime"]["auto_semantic_stencil"]["enabled"]:
         raise ValueError("PCG lab requires generic profile and explicit semantics")
-    builder = PCGLabBaseBuilder(classes)
+    builder = builder or PCGLabBaseBuilder(classes)
     for branch in recipe["branches"]:
         if not isinstance(unreal.load_asset(branch["mesh"]), unreal.StaticMesh):
             raise RuntimeError("Missing source art: " + branch["mesh"])

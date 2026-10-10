@@ -26,7 +26,7 @@ from common import load_json_config, resolve_path
 
 
 class PCGCaptureRun:
-    def __init__(self, cfg, seed, poses):
+    def __init__(self, cfg, seed, poses, mode="pie", directory=None, validate_pose=None):
         self.cfg = copy.deepcopy(cfg)
         self.seed, self.poses = validate_seed(seed), poses
         self.done, self.error, self.result = False, None, None
@@ -35,8 +35,9 @@ class PCGCaptureRun:
         self._job = None
         self._frames = []
         self._callbacks = []
+        self.mode, self.validate_pose = mode, validate_pose
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.directory = ROOT / "output/pcg_lab/runs" / (f"{stamp}_seed{seed}_" + uuid.uuid4().hex[:8])
+        self.directory = Path(directory) if directory else ROOT / "output/pcg_lab/runs" / (f"{stamp}_seed{seed}_" + uuid.uuid4().hex[:8])
 
     def _write(self, name, value):
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -50,11 +51,23 @@ class PCGCaptureRun:
         return self
 
     def start(self):
-        if not unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_game_world():
+        game = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_game_world()
+        if self.mode not in ("pie", "editor"):
+            raise ValueError("Capture mode must be pie or editor")
+        if self.mode == "pie" and not game:
             raise RuntimeError("Start PIE in the PCG map before capturing")
+        if self.mode == "editor":
+            runtime = self.cfg["runtime"]
+            if game or runtime.get("profile") != "generic" or any(runtime.get(k) for k in (
+                    "pause_after_warmup", "wait_for_streaming", "move_player_to_capture",
+                    "console_commands", "post_capture_console_commands")):
+                raise RuntimeError("Editor capture requires no PIE, generic profile, and no gameplay/streaming operations")
+            if not runtime.get("enabled"):
+                raise ValueError("Enable the preparation plan to retain tick-based render warmup")
         if self.cfg["runtime"]["auto_semantic_stencil"]["enabled"]:
             raise ValueError("Disable automatic semantic inference for PCG")
         recipe, classes = load_recipe(self.cfg["pcg"]["recipe"], self.cfg["semantics"]["class_table_csv"])
+        self.directory.mkdir(parents=True, exist_ok=False)
         self.cfg["output"]["capture_dir"] = str(self.directory / "captures")
         self.cfg["output"]["metadata_csv"] = str(self.directory / "capture_metadata.csv")
         self._write("pipeline_config.json", self.cfg)
@@ -92,6 +105,8 @@ class PCGCaptureRun:
             self._finish()
             return
         pose = self.poses[self.success_count]
+        if self.validate_pose:
+            self.validate_pose(pose)
         capture_id = f"pcg_s{self.seed}_{self.success_count:03d}"
         self._job = capture_with_config(self.cfg, capture_id=capture_id, pose=pose)
         self._job.add_done_callback(self._captured)
@@ -114,7 +129,7 @@ class PCGCaptureRun:
         self.error = error.with_traceback(None) if error else None
         self.phase = "failed" if error else "complete"
         self.result = {"phase": self.phase, "error": str(error) if error else None,
-                       "seed": self.seed, "success_count": self.success_count,
+                       "mode": self.mode, "seed": self.seed, "success_count": self.success_count,
                        "failed_count": self.failed_count, "frames": self._frames,
                        "scene_sha256": self.cfg.get("_pcg_generation", {}).get("scene_sha256"),
                        "capture_config_sha256": fingerprint({k: v for k, v in self.cfg.items() if k != "_pcg_generation"})}
@@ -133,13 +148,14 @@ class PCGCaptureRun:
         print("ARGUS_PCG_CAPTURE", self.phase, str(self.directory), str(error or ""))
 
 
-def run(seed=None, config_path=str(ROOT / "config/pipeline_pcg.json"), poses=None):
+def run(seed=None, config_path=str(ROOT / "config/pipeline_pcg.json"), poses=None, mode="pie", directory=None, validate_pose=None):
     cfg, _ = load_json_config(config_path)
     recipe, _ = load_recipe(cfg["pcg"]["recipe"], cfg["semantics"]["class_table_csv"])
     poses = read_pose_rows(resolve_path(cfg["batch"]["poses_csv"])) if poses is None else poses
     if not poses:
         raise ValueError("At least one camera pose is required")
-    return PCGCaptureRun(cfg, recipe["seed"] if seed is None else seed, poses).start()
+    return PCGCaptureRun(cfg, recipe["seed"] if seed is None else seed, poses,
+                         mode=mode, directory=directory, validate_pose=validate_pose).start()
 
 
 if __name__ == "__main__":

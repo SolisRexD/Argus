@@ -1,5 +1,7 @@
 # PCG 第一版：生成固定场景，再采集多视角
 
+需要自动切换环境/布局、采样视角、输出整数类别标签与验收清单时，使用 [数据集工作流](dataset_workflow.md)。本页保留单场景 PCG Lab 的 PIE 基线；`capture_pcg_scene.run` 新增显式 `mode="editor"`，仅适用于关闭 gameplay/streaming 操作的静态配置。
+
 当前实现使用 UE 5.8 核心 PCG：CPU、非分区、OnDemand。真正的 PCG Graph 负责创建网格点、随机变换和 Static Mesh Spawner；Python 负责建图、等待、核验和采集调度。无需 PCGPythonInterop。
 
 地图 `/Game/Argus/PCG/Maps/Argus_PCG_Lab` 使用原生 GameModeBase，约 95×95 米。道路、三栋建筑、地面和灯光沿用干净关卡的构造方法；树、车、长椅、垃圾桶由 PCG 生成。CaptureLab 原地图与默认配置保持原用途。

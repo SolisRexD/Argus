@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "environments": ["urban", "park", "yard"],
+  "layout_seeds": [42, 43],
+  "pcg_seeds": [42],
+  "camera_seed": 2026,
+  "split_seed": 2026,
+  "split_ratios": [0.8, 0.1, 0.1],
+  "views_per_scene": 6,
+  "resolution": [1920, 1080],
+  "warmup_seconds": 2.0
+}

@@ -10,6 +10,11 @@ _active = None
 _capture_owner = None
 
 
+def ensure_idle():
+    if _capture_owner is not None or (_active is not None and not _active.done):
+        raise RuntimeError("Finish the active PCG generation/capture before changing maps")
+
+
 def acquire_capture(owner):
     global _capture_owner
     if _capture_owner is not None and _capture_owner is not owner:

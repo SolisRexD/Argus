@@ -8,6 +8,7 @@ from pathlib import Path
 import unreal
 
 from argus_core.pcg import canonical_instances, fingerprint, validate_instances, validate_recipe
+from argus_core.dataset import class_mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECIPE = ROOT / "config/pcg_lab_recipe.json"
@@ -22,7 +23,7 @@ def load_recipe(path=None, class_table=None):
     if not table.is_absolute():
         table = ROOT / table
     with table.open(encoding="utf-8-sig", newline="") as handle:
-        classes = {r["semantic_class"]: int(r["stencil"]) for r in csv.DictReader(handle)}
+        classes = class_mapping(csv.DictReader(handle))
     recipe = json.loads(path.read_text(encoding="utf-8"))
     validate_recipe(recipe, classes)
     return recipe, classes
