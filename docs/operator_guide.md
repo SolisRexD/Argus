@@ -1,5 +1,7 @@
 # 人工操作：逐脚本采集指南
 
+PCG 生成场景使用独立的 [PCG 逐脚本流程](pcg_workflow.md) 和 `config/pipeline_pcg.json`；先生成并验证，再采集。下面是一般场景的采集流程。
+
 本文按当前代码的真实入口编写。已有实验结论见 [验证基线](validation/2026-10-09-capture-baseline.md)，UE 机制与排障见 [agent 手册](agent_runbook.md)。字段细节仍以 [工作流参考](workflow.md) 为准。
 
 ## 1. 先选配置和执行环境

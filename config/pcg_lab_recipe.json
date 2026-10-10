@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "map_path": "/Game/Argus/PCG/Maps/Argus_PCG_Lab",
+  "graph_path": "/Game/Argus/PCG/Graphs/PCG_Argus_Lab",
+  "actor_label": "Argus_PCG_Generator",
+  "seed": 42,
+  "timeout_seconds": 60,
+  "branches": [
+    {"id": "trees_west", "mesh": "/Game/Prop/Kit_Tree_Birch/Mesh/SM_Tree_Birch_a", "semantic_class": "tree", "count": 4, "spacing": 1800, "center": [-1400, 0, 32], "jitter": [70, 100, 0], "yaw": [0, 359], "scale": 0.7},
+    {"id": "trees_east", "mesh": "/Game/Prop/Kit_Tree_Birch/Mesh/SM_Tree_Birch_a", "semantic_class": "tree", "count": 4, "spacing": 1800, "center": [1400, 0, 32], "jitter": [70, 100, 0], "yaw": [0, 359], "scale": 0.7},
+    {"id": "parked_cars", "mesh": "/Game/Vehicle/vehCar_vehicle06/Mesh/SM_vehCar_vehicle06", "semantic_class": "vehicle", "count": 4, "spacing": 1700, "center": [550, 0, 58], "jitter": [40, 200, 0], "yaw": [90, 90], "scale": 1.0},
+    {"id": "park_benches", "mesh": "/Game/Prop/Kit_bench_RR/mesh/SM_park_bench_N01", "semantic_class": "bench", "count": 3, "spacing": 900, "center": [2800, -2300, 20], "jitter": [80, 120, 0], "yaw": [90, 90], "scale": 1.0},
+    {"id": "park_bins", "mesh": "/Game/Prop/Kit_Trashcan_A/Mesh/SM_Trashcan_A_01", "semantic_class": "prop", "count": 3, "spacing": 900, "center": [3200, -2300, 20], "jitter": [70, 100, 0], "yaw": [0, 359], "scale": 1.0}
+  ]
+}

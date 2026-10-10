@@ -1,0 +1,127 @@
+{
+  "assets": {
+    "root": "/Game/Argus/PCG/Capture",
+    "material_name": "M_PP_SemanticMask_Auto",
+    "rt_rgb_name": "RT_RGB",
+    "rt_mask_name": "RT_MASK"
+  },
+  "capture": {
+    "primary_stream": "rgb",
+    "rgb_actor_label": "SC_RGB",
+    "mask_actor_label": "SC_MASK",
+    "capture_source": "SCS_FINAL_COLOR_LDR",
+    "capture_every_frame": false,
+    "capture_on_movement": false,
+    "always_persist_rendering_state": true,
+    "default_location": [
+      6500,
+      -7500,
+      6500
+    ],
+    "default_rotation": [
+      -32,
+      139,
+      0
+    ],
+    "sync_mask_to_rgb": true,
+    "camera_intrinsics": {
+      "projection_type": "perspective",
+      "fov_deg": 65.0,
+      "fx_px": null,
+      "fy_px": null,
+      "cx_px": null,
+      "cy_px": null,
+      "sensor_width_mm": null,
+      "sensor_height_mm": null,
+      "image_width": 1920,
+      "image_height": 1080,
+      "use_custom_aspect_ratio": false,
+      "aspect_ratio": null,
+      "constrain_aspect_ratio": false,
+      "ortho_width": null
+    },
+    "streams": [
+      {
+        "name": "rgb",
+        "color_space": "srgb",
+        "actor_label": "SC_RGB",
+        "rt_asset_name": "RT_RGB",
+        "file_suffix": "rgb",
+        "apply_post_process": false,
+        "post_process_material_name": "",
+        "sync_to_primary": false,
+        "force_png_opaque": true,
+        "capture_source": "SCS_FINAL_COLOR_LDR"
+      },
+      {
+        "name": "mask",
+        "color_space": "linear",
+        "actor_label": "SC_MASK",
+        "rt_asset_name": "RT_MASK",
+        "file_suffix": "mask",
+        "apply_post_process": true,
+        "post_process_material_name": "M_PP_SemanticMask_Auto",
+        "sync_to_primary": true,
+        "force_png_opaque": true,
+        "capture_source": "SCS_FINAL_COLOR_LDR"
+      }
+    ]
+  },
+  "render_target": {
+    "width": 1920,
+    "height": 1080,
+    "format_hint": "rgba8"
+  },
+  "semantics": {
+    "class_table_csv": "config/semantic_classes.csv",
+    "semantic_map_csv": "output/pcg_lab/semantic_map.csv",
+    "mask_encoding": "class_color",
+    "unknown_stencil": 250
+  },
+  "output": {
+    "capture_dir": "output/pcg_lab/captures",
+    "metadata_csv": "output/pcg_lab/capture_metadata.csv",
+    "inventory_json": "output/pcg_lab/scene_inventory.json",
+    "inventory_csv": "output/pcg_lab/scene_inventory.csv",
+    "semantic_validation_csv": "output/pcg_lab/semantic_map_validation.csv",
+    "stencil_writeback_log": "output/pcg_lab/stencil_writeback_log.csv",
+    "file_prefix": "pcg",
+    "force_png_opaque": true,
+    "force_mask_png_opaque": true
+  },
+  "runtime": {
+    "enabled": true,
+    "profile": "generic",
+    "warmup_seconds": 2.0,
+    "pause_after_warmup": true,
+    "resume_after_capture": true,
+    "wait_for_streaming": true,
+    "streaming_timeout_seconds": 120.0,
+    "move_player_to_capture": false,
+    "restore_player_after_capture": true,
+    "hide_player_during_capture": false,
+    "player_streaming_source_z_offset_cm": 0.0,
+    "console_commands": [],
+    "auto_semantic_stencil": {
+      "enabled": false,
+      "preserve_existing": true,
+      "unknown_for_unmatched": true,
+      "component_order": "capture_distance",
+      "max_components": 0,
+      "components_per_tick": 256,
+      "unmatched_sample_limit": 20,
+      "aliases_csv": ""
+    }
+  },
+  "batch": {
+    "poses_csv": "config/capture_lab_poses.csv",
+    "sleep_seconds": 0.0,
+    "continue_on_error": true,
+    "skip_existing_capture_id": true,
+    "skip_requires_all_files": true,
+    "clean_incomplete_metadata": true
+  },
+  "pcg": {
+    "recipe": "config/pcg_lab_recipe.json"
+  }
+}

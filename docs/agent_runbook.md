@@ -1,5 +1,7 @@
 # Agent 接手与 UE 机制适配手册
 
+PCG 场景先读 [PCG 流程与机制](pcg_workflow.md) 和 [2026-10-10 PCG 实测](validation/2026-10-10-pcg-baseline.md)。当前实现范围是一个受控 CPU、非分区、OnDemand PCGVolume；不可将其完成判据推广到 WP/GPU/Runtime Generation。
+
 本手册描述当前能力、证据要求和恢复方法。逐脚本入口见 [人工操作指南](operator_guide.md)，已完成的真实测试见 [验证基线](validation/2026-10-09-capture-baseline.md)。不能只凭旧会话摘要推断当前编辑器状态，也不能把这里的推荐流程当成代码已经实现的自动保护。
 
 ## 1. 接手时先读什么

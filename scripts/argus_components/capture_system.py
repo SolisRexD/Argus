@@ -1098,6 +1098,24 @@ class CaptureService(BaseCaptureService):
         assets = cfg["assets"]
         capture_cfg = cfg["capture"]
         output_cfg = cfg["output"]
+        if cfg.get("pcg"):
+            from argus_backends.ue.pcg import assert_capture_ready
+            assert_capture_ready(cfg)
+            original_finalize = finalize
+
+            def finalize_with_pcg(row):
+                assert_capture_ready(cfg)
+                proof = cfg["_pcg_generation"]
+                row.update({
+                    "pcg_generation_id": proof["generation_id"],
+                    "pcg_seed": proof["seed"],
+                    "pcg_scene_sha256": proof["scene_sha256"],
+                    "pcg_recipe_sha256": proof["recipe_sha256"],
+                    "pcg_graph_sha256": proof["saved_graph_sha256"],
+                })
+                return original_finalize(row) if original_finalize else row
+
+            finalize = finalize_with_pcg
         play_session_plan = self.runtime_session_controller.validate_capture_session(cfg)
 
         out_dir = resolve_path(output_cfg["capture_dir"])
@@ -1224,6 +1242,9 @@ class CaptureService(BaseCaptureService):
             return self.semantic_stencil_controller.apply_incremental(cfg, pose=pose)
 
         def capture_ready(semantic_stencil_stats):
+            if cfg.get("pcg"):
+                from argus_backends.ue.pcg import assert_capture_ready
+                assert_capture_ready(cfg)
             return self._capture_and_export(
                 states,
                 primary_stream,
